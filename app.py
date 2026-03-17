@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, date
 import matplotlib.pyplot as plt
 import math
 
-# --- FONCTIONS MATHÉMATIQUES POUR LE VENT ---
+# --- FONCTIONS MATHÉMATIQUES ---
 def calculer_cap(lat1, lon1, lat2, lon2):
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
     dlon = lon2 - lon1
@@ -19,18 +19,33 @@ def calculer_cap(lat1, lon1, lat2, lon2):
 
 def direction_vent_relative(cap_velo, dir_vent):
     diff = (dir_vent - cap_velo) % 360
-    if diff <= 45 or diff >= 315:
-        return "⬇️ Face"
-    elif 135 <= diff <= 225:
-        return "⬆️ Dos"
-    elif 45 < diff < 135:
-        return "↘️ Côté (Droit)"
-    else:
-        return "↙️ Côté (Gauche)"
+    if diff <= 45 or diff >= 315: return "⬇️ Face"
+    elif 135 <= diff <= 225: return "⬆️ Dos"
+    elif 45 < diff < 135: return "↘️ Côté (Droit)"
+    else: return "↙️ Côté (Gauche)"
+
+def categoriser_ascension(distance_m, d_plus):
+    """Calcule la difficulté d'une montée selon les standards cyclistes"""
+    if distance_m < 500 or d_plus < 30: # On ignore les petites bosses
+        return None
+    
+    pente_moyenne = (d_plus / distance_m) * 100
+    if pente_moyenne < 3.0: # Trop roulant pour être catégorisé
+        return None
+
+    # Formule du Score : Distance(km) * Pente(%) au carré
+    score = (distance_m / 1000) * (pente_moyenne ** 2)
+
+    if score >= 250: return "🔴 HC (Hors Catégorie)"
+    elif score >= 150: return "🟠 1ère Catég."
+    elif score >= 80: return "🟡 2ème Catég."
+    elif score >= 35: return "🟢 3ème Catég."
+    elif score >= 15: return "🔵 4ème Catég."
+    else: return "⚪ Non classée"
 
 # --- 1. TITRE ET PARAMÈTRES ---
 st.title("🚴‍♂️ Mon Parcours Vélo & Météo")
-st.write("Anticipez la météo, le vent et le dénivelé tout au long de votre sortie !")
+st.write("Anticipez la météo, le vent et analysez vos montées !")
 
 st.sidebar.header("Vos paramètres")
 vitesse_moyenne = st.sidebar.number_input("Vitesse moyenne sur le plat (km/h)", value=25)
@@ -40,7 +55,6 @@ heure_depart = st.sidebar.time_input("Heure de départ")
 fichier_gpx = st.file_uploader("Importez votre fichier parcours (.gpx)", type=["gpx"])
 
 if fichier_gpx is not None:
-    # --- 3. LECTURE DU FICHIER ---
     gpx = gpxpy.parse(fichier_gpx)
     points_gpx = []
     
@@ -51,22 +65,20 @@ if fichier_gpx is not None:
     
     if len(points_gpx) > 0:
         
-        # --- NOUVEAU : DÉTECTION DU FUSEAU HORAIRE ---
+        # --- DÉTECTION DU FUSEAU HORAIRE ---
         lat_depart = points_gpx[0].latitude
         lon_depart = points_gpx[0].longitude
         url_tz = f"https://api.open-meteo.com/v1/forecast?latitude={lat_depart}&longitude={lon_depart}&current=temperature_2m&timezone=auto"
-        
         try:
             rep_tz = requests.get(url_tz).json()
             fuseau_horaire = rep_tz.get("timezone", "Inconnu")
-            # On récupère la vraie date locale du point de départ
             date_str = rep_tz['current']['time'][:10] 
             date_locale = datetime.strptime(date_str, "%Y-%m-%d").date()
         except:
-            fuseau_horaire = "Erreur de détection"
+            fuseau_horaire = "Erreur"
             date_locale = date.today()
 
-        st.info(f"🌍 Fuseau horaire détecté pour ce parcours : **{fuseau_horaire}**")
+        st.info(f"🌍 Fuseau horaire détecté : **{fuseau_horaire}**")
 
         # --- PRÉ-CALCULS ---
         checkpoints = []
@@ -78,7 +90,6 @@ if fichier_gpx is not None:
         prochain_checkpoint_sec = 0 
         cap_actuel = 0
         
-        # On utilise la vraie date locale plutôt que la date du serveur !
         date_depart = datetime.combine(date_locale, heure_depart)
 
         for i in range(1, len(points_gpx)):
@@ -128,10 +139,75 @@ if fichier_gpx is not None:
             "Alt (m)": int(p_final.elevation) if p_final.elevation else 0
         })
 
-        # --- 4. AFFICHAGE VISUEL ---
+        # --- NOUVEAU : ANALYSE DES ASCENSIONS ---
+        df_profil = pd.DataFrame(profil_data)
+        ascensions = []
+        en_montee = False
+        debut_idx = 0
+        idx_max = 0
+        
+        if not df_profil.empty:
+            alt_min = df_profil.iloc[0]['Altitude (m)']
+            alt_max = alt_min
+
+            for i in range(len(df_profil)):
+                alt = df_profil.iloc[i]['Altitude (m)']
+
+                if not en_montee:
+                    if alt < alt_min:
+                        alt_min = alt
+                        debut_idx = i
+                    elif alt > alt_min + 15: # On monte de plus de 15m, le col commence
+                        en_montee = True
+                        idx_max = i
+                        alt_max = alt
+                else:
+                    if alt > alt_max:
+                        alt_max = alt
+                        idx_max = i
+                    elif alt <= alt_max - 30: # On redescend de 30m, le col est fini !
+                        dist_debut = df_profil.iloc[debut_idx]['Distance (km)']
+                        alt_debut = df_profil.iloc[debut_idx]['Altitude (m)']
+                        dist_sommet = df_profil.iloc[idx_max]['Distance (km)']
+                        
+                        dist_totale = dist_sommet - dist_debut
+                        d_plus = alt_max - alt_debut
+
+                        cat = categoriser_ascension(dist_totale * 1000, d_plus)
+                        if cat and "Non classée" not in cat:
+                            ascensions.append({
+                                "Départ": f"Km {round(dist_debut, 1)}",
+                                "Catégorie": cat,
+                                "Distance": f"{round(dist_totale, 1)} km",
+                                "Pente Moyenne": f"{round((d_plus / (dist_totale * 1000)) * 100, 1)} %",
+                                "Dénivelé": f"{int(d_plus)} m"
+                            })
+
+                        # Réinitialisation pour chercher le prochain col
+                        en_montee = False
+                        alt_min = alt
+                        debut_idx = i
+
+            # Si le GPX se termine pile au sommet d'un col
+            if en_montee:
+                dist_debut = df_profil.iloc[debut_idx]['Distance (km)']
+                alt_debut = df_profil.iloc[debut_idx]['Altitude (m)']
+                dist_sommet = df_profil.iloc[idx_max]['Distance (km)']
+                dist_totale = dist_sommet - dist_debut
+                d_plus = alt_max - alt_debut
+                cat = categoriser_ascension(dist_totale * 1000, d_plus)
+                if cat and "Non classée" not in cat:
+                    ascensions.append({
+                        "Départ": f"Km {round(dist_debut, 1)}",
+                        "Catégorie": cat,
+                        "Distance": f"{round(dist_totale, 1)} km",
+                        "Pente Moyenne": f"{round((d_plus / (dist_totale * 1000)) * 100, 1)} %",
+                        "Dénivelé": f"{int(d_plus)} m"
+                    })
+
+        # --- AFFICHAGE VISUEL ---
         st.write("### 📍 Votre itinéraire")
-        point_depart = [points_gpx[0].latitude, points_gpx[0].longitude]
-        carte_parcours = folium.Map(location=point_depart, zoom_start=12)
+        carte_parcours = folium.Map(location=[points_gpx[0].latitude, points_gpx[0].longitude], zoom_start=12)
         coordonnees = [[p.latitude, p.longitude] for p in points_gpx]
         folium.PolyLine(coordonnees, color="blue", weight=5, opacity=0.8).add_to(carte_parcours)
         st_folium(carte_parcours, width=700, height=400, returned_objects=[])
@@ -141,12 +217,9 @@ if fichier_gpx is not None:
         col1.metric("Distance", f"{round(distance_totale_m / 1000, 1)} km")
         col2.metric("Dénivelé +", f"{int(d_plus_total)} m")
         col3.metric("Dénivelé -", f"{int(d_moins_total)} m")
-        heures = int(temps_total_sec // 3600)
-        minutes = int((temps_total_sec % 3600) // 60)
-        col4.metric("Durée estimée", f"{heures}h {minutes:02d}m")
+        col4.metric("Durée", f"{int(temps_total_sec // 3600)}h {int((temps_total_sec % 3600) // 60):02d}m")
 
-        st.write("### ⛰️ Profil altimétrique")
-        df_profil = pd.DataFrame(profil_data)
+        st.write("### ⛰️ Profil altimétrique & Cols")
         fig, ax = plt.subplots(figsize=(10, 3))
         ax.fill_between(df_profil["Distance (km)"], df_profil["Altitude (m)"], color="#3b82f6", alpha=0.3)
         ax.plot(df_profil["Distance (km)"], df_profil["Altitude (m)"], color="#3b82f6", linewidth=2)
@@ -154,28 +227,31 @@ if fichier_gpx is not None:
         ax.set_ylabel("Altitude (m)", color="gray")
         ax.grid(True, linestyle='--', alpha=0.5)
         st.pyplot(fig)
+        
+        # Affichage du tableau des cols
+        if len(ascensions) > 0:
+            st.dataframe(pd.DataFrame(ascensions), use_container_width=True)
+        else:
+            st.success("🚴‍♂️ Parcours plutôt roulant, aucune difficulté catégorisée détectée !")
 
-        # --- 5. INTERROGATION DE LA MÉTÉO ---
+        # --- INTERROGATION DE LA MÉTÉO ---
         st.write("### ⏱️ Vos conditions de route")
         resultats_meteo = []
         barre_progression = st.progress(0)
 
         for i, cp in enumerate(checkpoints):
             url = f"https://api.open-meteo.com/v1/forecast?latitude={cp['lat']}&longitude={cp['lon']}&hourly=temperature_2m,precipitation_probability,wind_speed_10m,wind_direction_10m&timezone=auto"
-            
             try:
                 rep = requests.get(url).json()
                 heures_api = rep['hourly']['time']
-                
                 if cp['Heure_API'] in heures_api:
                     idx = heures_api.index(cp['Heure_API'])
                     temp = rep['hourly']['temperature_2m'][idx]
                     pluie = rep['hourly']['precipitation_probability'][idx]
                     vent_v = rep['hourly']['wind_speed_10m'][idx]
                     vent_d = rep['hourly']['wind_direction_10m'][idx]
-                    
                     sens_vent = direction_vent_relative(cp["Cap"], vent_d)
-
+                    
                     cp["Temp (°C)"] = f"{temp}°"
                     cp["Pluie"] = f"{pluie}%"
                     cp["Vent"] = f"{vent_v} km/h {sens_vent}"
@@ -188,7 +264,6 @@ if fichier_gpx is not None:
             resultats_meteo.append(cp)
             barre_progression.progress((i + 1) / len(checkpoints))
 
-        # --- 6. AFFICHAGE DU TABLEAU FINAL ---
         st.dataframe(pd.DataFrame(resultats_meteo), use_container_width=True)
 
     else:
