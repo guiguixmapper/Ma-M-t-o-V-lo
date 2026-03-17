@@ -41,8 +41,10 @@ st.title("🚴‍♂️ Mon Parcours Vélo & Météo")
 st.write("Anticipez la météo, le vent et analysez vos montées !")
 
 st.sidebar.header("Vos paramètres")
-vitesse_moyenne = st.sidebar.number_input("Vitesse moyenne sur le plat (km/h)", value=25)
+# NOUVEAU : Ajout du choix de la date !
+date_depart_choisie = st.sidebar.date_input("Date de départ", value=date.today())
 heure_depart = st.sidebar.time_input("Heure de départ")
+vitesse_moyenne = st.sidebar.number_input("Vitesse moyenne sur le plat (km/h)", value=25)
 
 info_fuseau = st.sidebar.empty()
 info_fuseau.info("🌍 Fuseau horaire : En attente du tracé...")
@@ -68,11 +70,8 @@ if fichier_gpx is not None:
         try:
             rep_tz = requests.get(url_tz).json()
             fuseau_horaire = rep_tz.get("timezone", "Inconnu")
-            date_str = rep_tz['current']['time'][:10] 
-            date_locale = datetime.strptime(date_str, "%Y-%m-%d").date()
         except:
             fuseau_horaire = "Erreur"
-            date_locale = date.today()
 
         info_fuseau.success(f"🌍 Heure et météo calées sur : **{fuseau_horaire}**")
 
@@ -86,7 +85,8 @@ if fichier_gpx is not None:
         prochain_checkpoint_sec = 0 
         cap_actuel = 0
         
-        date_depart = datetime.combine(date_locale, heure_depart)
+        # NOUVEAU : On combine la date choisie par l'utilisateur avec l'heure
+        date_depart = datetime.combine(date_depart_choisie, heure_depart)
 
         for i in range(1, len(points_gpx)):
             p1 = points_gpx[i-1]
@@ -118,7 +118,8 @@ if fichier_gpx is not None:
                 heure_passage = date_depart + timedelta(seconds=temps_total_sec)
                 checkpoints.append({
                     "lat": p2.latitude, "lon": p2.longitude, "Cap": cap_actuel,
-                    "Heure": heure_passage.strftime("%H:%M"),
+                    # On affiche maintenant le jour et l'heure dans le tableau si on dépasse minuit
+                    "Heure": heure_passage.strftime("%d/%m %H:%M"),
                     "Heure_API": heure_passage.replace(minute=0, second=0).strftime("%Y-%m-%dT%H:00"),
                     "Km": round(distance_totale_m / 1000, 1),
                     "Alt (m)": int(p2.elevation) if p2.elevation else 0
@@ -129,13 +130,13 @@ if fichier_gpx is not None:
         p_final = points_gpx[-1]
         checkpoints.append({
             "lat": p_final.latitude, "lon": p_final.longitude, "Cap": cap_actuel,
-            "Heure": heure_arrivee.strftime("%H:%M") + " (Arrivée)",
+            "Heure": heure_arrivee.strftime("%d/%m %H:%M") + " (Arr.)",
             "Heure_API": heure_arrivee.replace(minute=0, second=0).strftime("%Y-%m-%dT%H:00"),
             "Km": round(distance_totale_m / 1000, 1),
             "Alt (m)": int(p_final.elevation) if p_final.elevation else 0
         })
 
-        # --- ANALYSE DES ASCENSIONS (PENTE MAX LISSÉE SUR 50m) ---
+        # --- ANALYSE DES ASCENSIONS ---
         df_profil = pd.DataFrame(profil_data)
         ascensions = []
         en_montee = False
@@ -161,20 +162,17 @@ if fichier_gpx is not None:
                         alt_max = alt
                         pente_max_locale = 0
                 else:
-                    # NOUVEAU : Recherche du point situé 50m en arrière
                     for j in range(i-1, debut_idx-1, -1):
                         dist_precedente = df_profil.iloc[j]['Distance (km)']
                         dist_diff = dist - dist_precedente
                         
-                        # Si on a reculé d'au moins 50 mètres (0.050 km)
                         if dist_diff >= 0.050: 
                             alt_diff = alt - df_profil.iloc[j]['Altitude (m)']
                             pente_segment = (alt_diff / (dist_diff * 1000)) * 100
                             
-                            # Filtre de sécurité (ignorons ce qui dépasse 25% de moyenne sur 50m)
-                            if 0 < pente_segment <= 25 and pente_segment > pente_max_locale:
+                            if 0 < pente_segment <= 40 and pente_segment > pente_max_locale:
                                 pente_max_locale = pente_segment
-                            break # On a trouvé notre segment, on arrête la boucle pour ce point
+                            break
 
                     if alt > alt_max:
                         alt_max = alt
@@ -193,7 +191,7 @@ if fichier_gpx is not None:
                                 "Catégorie": cat,
                                 "Distance": f"{round(dist_totale, 1)} km",
                                 "Pente Moy.": f"{round((d_plus / (dist_totale * 1000)) * 100, 1)} %",
-                                "Pente Max (50m)": f"{round(pente_max_locale, 1)} %",
+                                "Pente Max": f"{round(pente_max_locale, 1)} %",
                                 "Dénivelé": f"{int(d_plus)} m"
                             })
                         en_montee = False
@@ -213,7 +211,7 @@ if fichier_gpx is not None:
                         "Catégorie": cat,
                         "Distance": f"{round(dist_totale, 1)} km",
                         "Pente Moy.": f"{round((d_plus / (dist_totale * 1000)) * 100, 1)} %",
-                        "Pente Max (50m)": f"{round(pente_max_locale, 1)} %",
+                        "Pente Max": f"{round(pente_max_locale, 1)} %",
                         "Dénivelé": f"{int(d_plus)} m"
                     })
 
