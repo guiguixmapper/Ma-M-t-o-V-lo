@@ -3,3 +3,4 @@ pandas
 gpxpy
 folium
 streamlit-folium
+requests
