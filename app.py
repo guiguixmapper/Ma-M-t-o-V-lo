@@ -44,6 +44,10 @@ st.sidebar.header("Vos paramètres")
 vitesse_moyenne = st.sidebar.number_input("Vitesse moyenne sur le plat (km/h)", value=25)
 heure_depart = st.sidebar.time_input("Heure de départ")
 
+# NOUVEAU : Une boîte d'information dans la barre latérale
+info_fuseau = st.sidebar.empty()
+info_fuseau.info("🌍 Fuseau horaire : En attente du tracé...")
+
 # --- 2. IMPORT DU FICHIER ---
 fichier_gpx = st.file_uploader("Importez votre fichier parcours (.gpx)", type=["gpx"])
 
@@ -71,7 +75,8 @@ if fichier_gpx is not None:
             fuseau_horaire = "Erreur"
             date_locale = date.today()
 
-        st.info(f"🌍 Fuseau horaire détecté : **{fuseau_horaire}**")
+        # NOUVEAU : On met à jour la boîte dans la barre latérale, et on l'enlève de la page principale !
+        info_fuseau.success(f"🌍 Heure et météo calées sur : **{fuseau_horaire}**")
 
         # --- PRÉ-CALCULS ---
         checkpoints = []
@@ -220,13 +225,12 @@ if fichier_gpx is not None:
         else:
             st.success("🚴‍♂️ Parcours plutôt roulant, aucune difficulté catégorisée détectée !")
 
-        # --- INTERROGATION DE LA MÉTÉO (MISE À JOUR) ---
+        # --- INTERROGATION DE LA MÉTÉO ---
         st.write("### ⏱️ Vos conditions de route")
         resultats_meteo = []
         barre_progression = st.progress(0)
 
         for i, cp in enumerate(checkpoints):
-            # NOUVEAU : Ajout de wind_gusts_10m dans l'URL
             url = f"https://api.open-meteo.com/v1/forecast?latitude={cp['lat']}&longitude={cp['lon']}&hourly=temperature_2m,precipitation_probability,wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=auto"
             try:
                 rep = requests.get(url).json()
@@ -236,14 +240,13 @@ if fichier_gpx is not None:
                     temp = rep['hourly']['temperature_2m'][idx]
                     pluie = rep['hourly']['precipitation_probability'][idx]
                     vent_v = rep['hourly']['wind_speed_10m'][idx]
-                    vent_rafales = rep['hourly']['wind_gusts_10m'][idx] # Les rafales !
+                    vent_rafales = rep['hourly']['wind_gusts_10m'][idx]
                     vent_d = rep['hourly']['wind_direction_10m'][idx]
                     
                     directions = ["N", "NE", "E", "SE", "S", "SO", "O", "NO", "N"]
                     dir_texte = directions[round(vent_d / 45) % 8]
                     sens_vent = direction_vent_relative(cp["Cap"], vent_d)
                     
-                    # Séparation en colonnes distinctes
                     cp["Temp (°C)"] = f"{temp}°"
                     cp["Pluie"] = f"{pluie}%"
                     cp["Vent (km/h)"] = vent_v
