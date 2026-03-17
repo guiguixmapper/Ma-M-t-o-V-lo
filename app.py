@@ -44,7 +44,6 @@ st.sidebar.header("Vos paramètres")
 vitesse_moyenne = st.sidebar.number_input("Vitesse moyenne sur le plat (km/h)", value=25)
 heure_depart = st.sidebar.time_input("Heure de départ")
 
-# NOUVEAU : Une boîte d'information dans la barre latérale
 info_fuseau = st.sidebar.empty()
 info_fuseau.info("🌍 Fuseau horaire : En attente du tracé...")
 
@@ -75,7 +74,6 @@ if fichier_gpx is not None:
             fuseau_horaire = "Erreur"
             date_locale = date.today()
 
-        # NOUVEAU : On met à jour la boîte dans la barre latérale, et on l'enlève de la page principale !
         info_fuseau.success(f"🌍 Heure et météo calées sur : **{fuseau_horaire}**")
 
         # --- PRÉ-CALCULS ---
@@ -137,19 +135,23 @@ if fichier_gpx is not None:
             "Alt (m)": int(p_final.elevation) if p_final.elevation else 0
         })
 
-        # --- ANALYSE DES ASCENSIONS ---
+        # --- ANALYSE DES ASCENSIONS (AVEC PENTE MAX) ---
         df_profil = pd.DataFrame(profil_data)
         ascensions = []
         en_montee = False
         debut_idx = 0
         idx_max = 0
+        pente_max_locale = 0
         
         if not df_profil.empty:
             alt_min = df_profil.iloc[0]['Altitude (m)']
             alt_max = alt_min
 
-            for i in range(len(df_profil)):
+            # On commence à 1 pour pouvoir comparer avec le point précédent
+            for i in range(1, len(df_profil)):
                 alt = df_profil.iloc[i]['Altitude (m)']
+                dist = df_profil.iloc[i]['Distance (km)']
+                
                 if not en_montee:
                     if alt < alt_min:
                         alt_min = alt
@@ -158,7 +160,18 @@ if fichier_gpx is not None:
                         en_montee = True
                         idx_max = i
                         alt_max = alt
+                        pente_max_locale = 0 # On remet à zéro pour le nouveau col
                 else:
+                    # Calcul de la pente sur ce mini-segment
+                    dist_diff = dist - df_profil.iloc[i-1]['Distance (km)']
+                    alt_diff = alt - df_profil.iloc[i-1]['Altitude (m)']
+                    
+                    if dist_diff > 0:
+                        pente_segment = (alt_diff / (dist_diff * 1000)) * 100
+                        # Filtre anti-bug GPS : on ignore les pentes > 30% ou négatives
+                        if 0 < pente_segment <= 30 and pente_segment > pente_max_locale:
+                            pente_max_locale = pente_segment
+
                     if alt > alt_max:
                         alt_max = alt
                         idx_max = i
@@ -168,13 +181,15 @@ if fichier_gpx is not None:
                         dist_sommet = df_profil.iloc[idx_max]['Distance (km)']
                         dist_totale = dist_sommet - dist_debut
                         d_plus = alt_max - alt_debut
+                        
                         cat = categoriser_ascension(dist_totale * 1000, d_plus)
                         if cat and "Non classée" not in cat:
                             ascensions.append({
                                 "Départ": f"Km {round(dist_debut, 1)}",
                                 "Catégorie": cat,
                                 "Distance": f"{round(dist_totale, 1)} km",
-                                "Pente Moyenne": f"{round((d_plus / (dist_totale * 1000)) * 100, 1)} %",
+                                "Pente Moy.": f"{round((d_plus / (dist_totale * 1000)) * 100, 1)} %",
+                                "Pente Max": f"{round(pente_max_locale, 1)} %",
                                 "Dénivelé": f"{int(d_plus)} m"
                             })
                         en_montee = False
@@ -193,7 +208,8 @@ if fichier_gpx is not None:
                         "Départ": f"Km {round(dist_debut, 1)}",
                         "Catégorie": cat,
                         "Distance": f"{round(dist_totale, 1)} km",
-                        "Pente Moyenne": f"{round((d_plus / (dist_totale * 1000)) * 100, 1)} %",
+                        "Pente Moy.": f"{round((d_plus / (dist_totale * 1000)) * 100, 1)} %",
+                        "Pente Max": f"{round(pente_max_locale, 1)} %",
                         "Dénivelé": f"{int(d_plus)} m"
                     })
 
