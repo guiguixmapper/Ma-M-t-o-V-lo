@@ -119,7 +119,9 @@ if fichier_gpx is not None:
         carte_parcours = folium.Map(location=point_depart, zoom_start=12)
         coordonnees = [[p.latitude, p.longitude] for p in points_gpx]
         folium.PolyLine(coordonnees, color="blue", weight=5, opacity=0.8).add_to(carte_parcours)
-        st_folium(carte_parcours, width=700, height=400)
+        
+        # LA MODIFICATION EST ICI : ajout de returned_objects=[]
+        st_folium(carte_parcours, width=700, height=400, returned_objects=[])
 
         st.write("### 📊 Résumé du parcours")
         col1, col2, col3, col4 = st.columns(4)
