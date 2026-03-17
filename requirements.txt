@@ -1,2 +1,5 @@
 streamlit
 pandas
+gpxpy
+folium
+streamlit-folium
