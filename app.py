@@ -27,7 +27,10 @@ def direction_vent_relative(cap_velo, dir_vent):
 def categoriser_ascension(distance_m, d_plus):
     if distance_m < 500 or d_plus < 30: return None
     pente_moyenne = (d_plus / distance_m) * 100
-    if pente_moyenne < 3.0: return None
+    
+    # MODIFICATION 1 : On abaisse la limite stricte à 1.5% au lieu de 3%
+    if pente_moyenne < 1.5: return None 
+    
     score = (distance_m / 1000) * (pente_moyenne ** 2)
     if score >= 250: return "🔴 HC (Hors Catégorie)"
     elif score >= 150: return "🟠 1ère Catég."
@@ -188,7 +191,8 @@ if fichier_gpx is not None:
                     if alt > alt_max:
                         alt_max = alt
                         idx_max = i
-                    elif alt <= alt_max - 30:
+                    # MODIFICATION 2 : On passe à 40m de marge pour ne pas couper un col trop tôt
+                    elif alt <= alt_max - 40: 
                         dist_debut = df_profil.iloc[debut_idx]['Distance (km)']
                         alt_debut = df_profil.iloc[debut_idx]['Altitude (m)']
                         dist_sommet = df_profil.iloc[idx_max]['Distance (km)']
@@ -216,7 +220,6 @@ if fichier_gpx is not None:
         resultats_meteo = []
         barre_progression = st.progress(0)
 
-        # On prépare la commande "groupée" pour tous les points d'un coup
         lats = ",".join([str(cp['lat']) for cp in checkpoints])
         lons = ",".join([str(cp['lon']) for cp in checkpoints])
         
@@ -225,7 +228,6 @@ if fichier_gpx is not None:
         try:
             rep_meteo = requests.get(url_meteo).json()
             
-            # Si le parcours est très court (1 seul point), l'API renvoie un dico. Sinon, une liste. On standardise.
             if isinstance(rep_meteo, dict):
                 rep_list = [rep_meteo]
             else:
