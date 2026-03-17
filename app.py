@@ -1,45 +1,50 @@
 import streamlit as st
 import pandas as pd
+import gpxpy
+import folium
+from streamlit_folium import st_folium
 
-# 1. TITRE DE L'APPLICATION
+# 1. TITRE ET PARAMÈTRES
 st.title("🚴‍♂️ Mon Parcours Vélo & Météo")
 st.write("Anticipez la météo, le vent et le dénivelé tout au long de votre sortie !")
 
-# 2. LES PARAMÈTRES (Sur le côté de la page)
 st.sidebar.header("Vos paramètres")
 vitesse_moyenne = st.sidebar.number_input("Vitesse moyenne sur le plat (km/h)", value=25)
 heure_depart = st.sidebar.time_input("Heure de départ")
 
-# 3. LE BOUTON D'IMPORT DU PARCOURS
+# 2. IMPORT DU FICHIER
 fichier_gpx = st.file_uploader("Importez votre fichier parcours (.gpx)", type=["gpx"])
 
-# 4. SI UN FICHIER EST IMPORTÉ, ON LANCE LA MACHINE
+# 3. TRAITEMENT DU FICHIER ET AFFICHAGE DE LA CARTE
 if fichier_gpx is not None:
-    st.success("Parcours chargé avec succès ! Calcul en cours...")
+    st.success("Parcours lu avec succès ! Création de la carte...")
     
-    # ---------------------------------------------------------
-    # C'EST ICI QUE LE "MOTEUR" FERA SON TRAVAIL INVISIBLE :
-    # - Lire les points GPS du fichier
-    # - Calculer le ralentissement dû au dénivelé positif
-    # - Trouver votre position toutes les 10 minutes
-    # - Interroger l'API Open-Meteo
-    # ---------------------------------------------------------
-
-    # 5. AFFICHAGE DE LA CARTE (Ici, on affichera le tracé réel)
-    st.write("### 📍 Votre itinéraire")
-    st.info("La carte interactive s'affichera ici.")
+    # --- Lecture du fichier GPX ---
+    gpx = gpxpy.parse(fichier_gpx)
     
-    # 6. AFFICHAGE DU RÉSULTAT FINAL (Le tableau de bord)
-    st.write("### ⏱️ Vos conditions de route (Toutes les 10 min)")
+    # Extraction des coordonnées GPS
+    points_gps = []
+    for track in gpx.tracks:
+        for segment in track.segments:
+            for point in segment.points:
+                points_gps.append([point.latitude, point.longitude])
     
-    # J'ai mis de fausses données ici pour vous montrer à quoi ressemblera le résultat
-    donnees_exemple = {
-        "Heure": ["08:00", "08:10", "08:20", "08:30"],
-        "Km franchis": [0, 4.1, 7.8, 10.5], # On voit qu'on a moins avancé à cause de la montée !
-        "Altitude (m)": [200, 215, 450, 600],
-        "Météo": ["☀️ Beau", "⛅ Nuageux", "🌧️ Averses", "🌧️ Pluie"],
-        "Vent": ["⬇️ Face (15km/h)", "⬇️ Face (15km/h)", "⬅️ Côté (20km/h)", "⬅️ Côté (25km/h)"]
-    }
+    # --- Création de la carte ---
+    if len(points_gps) > 0:
+        st.write("### 📍 Votre itinéraire")
+        
+        # On centre la carte sur le premier point du parcours
+        point_depart = points_gps[0]
+        carte_parcours = folium.Map(location=point_depart, zoom_start=12)
+        
+        # On trace la ligne bleue du parcours
+        folium.PolyLine(points_gps, color="blue", weight=5, opacity=0.8).add_to(carte_parcours)
+        
+        # On affiche la carte dans le site web
+        st_folium(carte_parcours, width=700, height=500)
+    else:
+        st.error("Le fichier GPX semble vide ou ne contient pas de tracé valide.")
     
-    # On transforme ces données en un beau tableau
-    st.dataframe(pd.DataFrame(donnees_exemple), use_container_width=True)
+    # 4. LE TABLEAU (En attente du vrai moteur de calcul)
+    st.write("### ⏱️ Vos conditions de route (Bientôt !)")
+    st.info("La prochaine étape sera d'ajouter le calcul du temps avec le dénivelé et la météo.")
