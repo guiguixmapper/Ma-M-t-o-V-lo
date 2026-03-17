@@ -211,35 +211,56 @@ if fichier_gpx is not None:
                 if cat and "Non classée" not in cat:
                     ascensions.append({"Départ": f"Km {round(dist_debut, 1)}", "Catégorie": cat, "Distance": f"{round(dist_totale, 1)} km", "Pente Moy.": f"{round((d_plus / (dist_totale * 1000)) * 100, 1)} %", "Pente Max": f"{round(pente_max_locale, 1)} %", "Dénivelé": f"{int(d_plus)} m"})
 
-        # --- PHASE 3 : INTERROGATION DE LA MÉTÉO ---
-        st.write("### 📡 Récupération des données météo en cours...")
+        # --- PHASE 3 : INTERROGATION DE LA MÉTÉO (VERSION TURBO) ---
+        st.write("### 📡 Récupération ultra-rapide des données météo...")
         resultats_meteo = []
         barre_progression = st.progress(0)
 
-        for i, cp in enumerate(checkpoints):
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={cp['lat']}&longitude={cp['lon']}&hourly=temperature_2m,precipitation_probability,weathercode,wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=auto"
-            try:
-                rep = requests.get(url).json()
-                heures_api = rep['hourly']['time']
-                if cp['Heure_API'] in heures_api:
-                    idx = heures_api.index(cp['Heure_API'])
-                    cp["Ciel"] = obtenir_icone_meteo(rep['hourly']['weathercode'][idx])
-                    cp["Temp (°C)"] = f"{rep['hourly']['temperature_2m'][idx]}°"
-                    cp["Pluie"] = f"{rep['hourly']['precipitation_probability'][idx]}%"
-                    cp["Vent (km/h)"] = rep['hourly']['wind_speed_10m'][idx]
-                    cp["Rafales"] = rep['hourly']['wind_gusts_10m'][idx]
-                    
-                    vent_d = rep['hourly']['wind_direction_10m'][idx]
-                    directions = ["N", "NE", "E", "SE", "S", "SO", "O", "NO", "N"]
-                    cp["Dir."] = directions[round(vent_d / 45) % 8]
-                    cp["Effet Vent"] = direction_vent_relative(cp["Cap"], vent_d)
-                else:
-                    cp["Ciel"], cp["Temp (°C)"], cp["Pluie"], cp["Vent (km/h)"], cp["Rafales"], cp["Dir."], cp["Effet Vent"] = "-", "-", "-", "-", "-", "-", "-"
-            except:
-                cp["Ciel"], cp["Temp (°C)"], cp["Pluie"], cp["Vent (km/h)"], cp["Rafales"], cp["Dir."], cp["Effet Vent"] = "Err", "Err", "Err", "Err", "Err", "Err", "Err"
+        # On prépare la commande "groupée" pour tous les points d'un coup
+        lats = ",".join([str(cp['lat']) for cp in checkpoints])
+        lons = ",".join([str(cp['lon']) for cp in checkpoints])
+        
+        url_meteo = f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}&hourly=temperature_2m,precipitation_probability,weathercode,wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=auto"
+        
+        try:
+            rep_meteo = requests.get(url_meteo).json()
             
-            resultats_meteo.append(cp)
-            barre_progression.progress((i + 1) / len(checkpoints))
+            # Si le parcours est très court (1 seul point), l'API renvoie un dico. Sinon, une liste. On standardise.
+            if isinstance(rep_meteo, dict):
+                rep_list = [rep_meteo]
+            else:
+                rep_list = rep_meteo
+
+            for i, cp in enumerate(checkpoints):
+                if i < len(rep_list) and 'hourly' in rep_list[i]:
+                    donnees_api = rep_list[i]
+                    heures_api = donnees_api['hourly']['time']
+                    
+                    if cp['Heure_API'] in heures_api:
+                        idx = heures_api.index(cp['Heure_API'])
+                        cp["Ciel"] = obtenir_icone_meteo(donnees_api['hourly']['weathercode'][idx])
+                        cp["Temp (°C)"] = f"{donnees_api['hourly']['temperature_2m'][idx]}°"
+                        cp["Pluie"] = f"{donnees_api['hourly']['precipitation_probability'][idx]}%"
+                        cp["Vent (km/h)"] = donnees_api['hourly']['wind_speed_10m'][idx]
+                        cp["Rafales"] = donnees_api['hourly']['wind_gusts_10m'][idx]
+                        
+                        vent_d = donnees_api['hourly']['wind_direction_10m'][idx]
+                        directions = ["N", "NE", "E", "SE", "S", "SO", "O", "NO", "N"]
+                        cp["Dir."] = directions[round(vent_d / 45) % 8]
+                        cp["Effet Vent"] = direction_vent_relative(cp["Cap"], vent_d)
+                    else:
+                        cp["Ciel"], cp["Temp (°C)"], cp["Pluie"], cp["Vent (km/h)"], cp["Rafales"], cp["Dir."], cp["Effet Vent"] = "-", "-", "-", "-", "-", "-", "-"
+                else:
+                    cp["Ciel"], cp["Temp (°C)"], cp["Pluie"], cp["Vent (km/h)"], cp["Rafales"], cp["Dir."], cp["Effet Vent"] = "Err", "Err", "Err", "Err", "Err", "Err", "Err"
+                
+                resultats_meteo.append(cp)
+                barre_progression.progress((i + 1) / len(checkpoints))
+                
+        except Exception as e:
+            st.error("Erreur lors de la récupération météo.")
+            for cp in checkpoints:
+                cp["Ciel"], cp["Temp (°C)"], cp["Pluie"], cp["Vent (km/h)"], cp["Rafales"], cp["Dir."], cp["Effet Vent"] = "Err", "Err", "Err", "Err", "Err", "Err", "Err"
+                resultats_meteo.append(cp)
 
         # --- PHASE 4 : AFFICHAGE DE LA CARTE AVEC LES MARQUEURS ---
         st.write("### 📍 Votre itinéraire & Checkpoints Météo")
@@ -249,7 +270,6 @@ if fichier_gpx is not None:
         
         for cp in resultats_meteo:
             if cp["Temp (°C)"] not in ["-", "Err"]:
-                # MODIFICATION ICI : On ajoute la direction globale du vent dans les popups
                 popup_html = f"<b>{cp['Heure']} (Km {cp['Km']})</b><br><br>{cp['Ciel']} {cp['Temp (°C)']}<br>💨 Vent : {cp['Vent (km/h)']} km/h venant du <b>{cp['Dir.']}</b><br>🚴‍♂️ Sur le vélo : {cp['Effet Vent']}"
                 tooltip_text = f"{cp['Heure']} - {cp['Ciel']} {cp['Temp (°C)']} | 💨 {cp['Vent (km/h)']} km/h ({cp['Dir.']})"
                 
@@ -285,7 +305,6 @@ if fichier_gpx is not None:
             st.success("🚴‍♂️ Parcours plutôt roulant, aucune difficulté catégorisée détectée !")
 
         st.write("### ⏱️ Détail des conditions de route")
-        
         df_meteo = pd.DataFrame(resultats_meteo)
         df_meteo = df_meteo.drop(columns=['lat', 'lon', 'Heure_API', 'Cap'])
         st.dataframe(df_meteo, use_container_width=True)
