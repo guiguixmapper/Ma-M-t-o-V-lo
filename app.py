@@ -135,7 +135,7 @@ if fichier_gpx is not None:
             "Alt (m)": int(p_final.elevation) if p_final.elevation else 0
         })
 
-        # --- ANALYSE DES ASCENSIONS (AVEC PENTE MAX) ---
+        # --- ANALYSE DES ASCENSIONS (PENTE MAX LISSÉE SUR 50m) ---
         df_profil = pd.DataFrame(profil_data)
         ascensions = []
         en_montee = False
@@ -147,7 +147,6 @@ if fichier_gpx is not None:
             alt_min = df_profil.iloc[0]['Altitude (m)']
             alt_max = alt_min
 
-            # On commence à 1 pour pouvoir comparer avec le point précédent
             for i in range(1, len(df_profil)):
                 alt = df_profil.iloc[i]['Altitude (m)']
                 dist = df_profil.iloc[i]['Distance (km)']
@@ -160,17 +159,22 @@ if fichier_gpx is not None:
                         en_montee = True
                         idx_max = i
                         alt_max = alt
-                        pente_max_locale = 0 # On remet à zéro pour le nouveau col
+                        pente_max_locale = 0
                 else:
-                    # Calcul de la pente sur ce mini-segment
-                    dist_diff = dist - df_profil.iloc[i-1]['Distance (km)']
-                    alt_diff = alt - df_profil.iloc[i-1]['Altitude (m)']
-                    
-                    if dist_diff > 0:
-                        pente_segment = (alt_diff / (dist_diff * 1000)) * 100
-                        # Filtre anti-bug GPS : on ignore les pentes > 30% ou négatives
-                        if 0 < pente_segment <= 30 and pente_segment > pente_max_locale:
-                            pente_max_locale = pente_segment
+                    # NOUVEAU : Recherche du point situé 50m en arrière
+                    for j in range(i-1, debut_idx-1, -1):
+                        dist_precedente = df_profil.iloc[j]['Distance (km)']
+                        dist_diff = dist - dist_precedente
+                        
+                        # Si on a reculé d'au moins 50 mètres (0.050 km)
+                        if dist_diff >= 0.050: 
+                            alt_diff = alt - df_profil.iloc[j]['Altitude (m)']
+                            pente_segment = (alt_diff / (dist_diff * 1000)) * 100
+                            
+                            # Filtre de sécurité (ignorons ce qui dépasse 25% de moyenne sur 50m)
+                            if 0 < pente_segment <= 25 and pente_segment > pente_max_locale:
+                                pente_max_locale = pente_segment
+                            break # On a trouvé notre segment, on arrête la boucle pour ce point
 
                     if alt > alt_max:
                         alt_max = alt
@@ -189,7 +193,7 @@ if fichier_gpx is not None:
                                 "Catégorie": cat,
                                 "Distance": f"{round(dist_totale, 1)} km",
                                 "Pente Moy.": f"{round((d_plus / (dist_totale * 1000)) * 100, 1)} %",
-                                "Pente Max": f"{round(pente_max_locale, 1)} %",
+                                "Pente Max (50m)": f"{round(pente_max_locale, 1)} %",
                                 "Dénivelé": f"{int(d_plus)} m"
                             })
                         en_montee = False
@@ -209,7 +213,7 @@ if fichier_gpx is not None:
                         "Catégorie": cat,
                         "Distance": f"{round(dist_totale, 1)} km",
                         "Pente Moy.": f"{round((d_plus / (dist_totale * 1000)) * 100, 1)} %",
-                        "Pente Max": f"{round(pente_max_locale, 1)} %",
+                        "Pente Max (50m)": f"{round(pente_max_locale, 1)} %",
                         "Dénivelé": f"{int(d_plus)} m"
                     })
 
