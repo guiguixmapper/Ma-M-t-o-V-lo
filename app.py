@@ -247,17 +247,15 @@ if fichier_gpx is not None:
         coordonnees = [[p.latitude, p.longitude] for p in points_gpx]
         folium.PolyLine(coordonnees, color="blue", weight=5, opacity=0.8).add_to(carte_parcours)
         
-        # NOUVEAU : Ajout des marqueurs météo sur la carte !
         for cp in resultats_meteo:
             if cp["Temp (°C)"] not in ["-", "Err"]:
-                # Le texte qui s'affichera au clic
-                popup_html = f"<b>{cp['Heure']} (Km {cp['Km']})</b><br>{cp['Ciel']} {cp['Temp (°C)']}<br>Vent: {cp['Vent (km/h)']} km/h {cp['Effet Vent']}"
-                # Le texte qui s'affichera au survol de la souris
-                tooltip_text = f"{cp['Heure']} - {cp['Ciel']} {cp['Temp (°C)']}"
+                # MODIFICATION ICI : On ajoute la direction globale du vent dans les popups
+                popup_html = f"<b>{cp['Heure']} (Km {cp['Km']})</b><br><br>{cp['Ciel']} {cp['Temp (°C)']}<br>💨 Vent : {cp['Vent (km/h)']} km/h venant du <b>{cp['Dir.']}</b><br>🚴‍♂️ Sur le vélo : {cp['Effet Vent']}"
+                tooltip_text = f"{cp['Heure']} - {cp['Ciel']} {cp['Temp (°C)']} | 💨 {cp['Vent (km/h)']} km/h ({cp['Dir.']})"
                 
                 folium.Marker(
                     location=[cp['lat'], cp['lon']],
-                    popup=folium.Popup(popup_html, max_width=200),
+                    popup=folium.Popup(popup_html, max_width=250),
                     tooltip=tooltip_text,
                     icon=folium.Icon(color='blue', icon='info-sign')
                 ).add_to(carte_parcours)
@@ -288,7 +286,6 @@ if fichier_gpx is not None:
 
         st.write("### ⏱️ Détail des conditions de route")
         
-        # On nettoie le tableau pour ne pas afficher la latitude/longitude
         df_meteo = pd.DataFrame(resultats_meteo)
         df_meteo = df_meteo.drop(columns=['lat', 'lon', 'Heure_API', 'Cap'])
         st.dataframe(df_meteo, use_container_width=True)
