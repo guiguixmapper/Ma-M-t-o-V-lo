@@ -25,17 +25,10 @@ def direction_vent_relative(cap_velo, dir_vent):
     else: return "↙️ Côté (Gauche)"
 
 def categoriser_ascension(distance_m, d_plus):
-    """Calcule la difficulté d'une montée selon les standards cyclistes"""
-    if distance_m < 500 or d_plus < 30: # On ignore les petites bosses
-        return None
-    
+    if distance_m < 500 or d_plus < 30: return None
     pente_moyenne = (d_plus / distance_m) * 100
-    if pente_moyenne < 3.0: # Trop roulant pour être catégorisé
-        return None
-
-    # Formule du Score : Distance(km) * Pente(%) au carré
+    if pente_moyenne < 3.0: return None
     score = (distance_m / 1000) * (pente_moyenne ** 2)
-
     if score >= 250: return "🔴 HC (Hors Catégorie)"
     elif score >= 150: return "🟠 1ère Catég."
     elif score >= 80: return "🟡 2ème Catég."
@@ -139,7 +132,7 @@ if fichier_gpx is not None:
             "Alt (m)": int(p_final.elevation) if p_final.elevation else 0
         })
 
-        # --- NOUVEAU : ANALYSE DES ASCENSIONS ---
+        # --- ANALYSE DES ASCENSIONS ---
         df_profil = pd.DataFrame(profil_data)
         ascensions = []
         en_montee = False
@@ -152,12 +145,11 @@ if fichier_gpx is not None:
 
             for i in range(len(df_profil)):
                 alt = df_profil.iloc[i]['Altitude (m)']
-
                 if not en_montee:
                     if alt < alt_min:
                         alt_min = alt
                         debut_idx = i
-                    elif alt > alt_min + 15: # On monte de plus de 15m, le col commence
+                    elif alt > alt_min + 15:
                         en_montee = True
                         idx_max = i
                         alt_max = alt
@@ -165,14 +157,12 @@ if fichier_gpx is not None:
                     if alt > alt_max:
                         alt_max = alt
                         idx_max = i
-                    elif alt <= alt_max - 30: # On redescend de 30m, le col est fini !
+                    elif alt <= alt_max - 30:
                         dist_debut = df_profil.iloc[debut_idx]['Distance (km)']
                         alt_debut = df_profil.iloc[debut_idx]['Altitude (m)']
                         dist_sommet = df_profil.iloc[idx_max]['Distance (km)']
-                        
                         dist_totale = dist_sommet - dist_debut
                         d_plus = alt_max - alt_debut
-
                         cat = categoriser_ascension(dist_totale * 1000, d_plus)
                         if cat and "Non classée" not in cat:
                             ascensions.append({
@@ -182,13 +172,10 @@ if fichier_gpx is not None:
                                 "Pente Moyenne": f"{round((d_plus / (dist_totale * 1000)) * 100, 1)} %",
                                 "Dénivelé": f"{int(d_plus)} m"
                             })
-
-                        # Réinitialisation pour chercher le prochain col
                         en_montee = False
                         alt_min = alt
                         debut_idx = i
 
-            # Si le GPX se termine pile au sommet d'un col
             if en_montee:
                 dist_debut = df_profil.iloc[debut_idx]['Distance (km)']
                 alt_debut = df_profil.iloc[debut_idx]['Altitude (m)']
@@ -228,19 +215,19 @@ if fichier_gpx is not None:
         ax.grid(True, linestyle='--', alpha=0.5)
         st.pyplot(fig)
         
-        # Affichage du tableau des cols
         if len(ascensions) > 0:
             st.dataframe(pd.DataFrame(ascensions), use_container_width=True)
         else:
             st.success("🚴‍♂️ Parcours plutôt roulant, aucune difficulté catégorisée détectée !")
 
-        # --- INTERROGATION DE LA MÉTÉO ---
+        # --- INTERROGATION DE LA MÉTÉO (MISE À JOUR) ---
         st.write("### ⏱️ Vos conditions de route")
         resultats_meteo = []
         barre_progression = st.progress(0)
 
         for i, cp in enumerate(checkpoints):
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={cp['lat']}&longitude={cp['lon']}&hourly=temperature_2m,precipitation_probability,wind_speed_10m,wind_direction_10m&timezone=auto"
+            # NOUVEAU : Ajout de wind_gusts_10m dans l'URL
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={cp['lat']}&longitude={cp['lon']}&hourly=temperature_2m,precipitation_probability,wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=auto"
             try:
                 rep = requests.get(url).json()
                 heures_api = rep['hourly']['time']
@@ -249,16 +236,24 @@ if fichier_gpx is not None:
                     temp = rep['hourly']['temperature_2m'][idx]
                     pluie = rep['hourly']['precipitation_probability'][idx]
                     vent_v = rep['hourly']['wind_speed_10m'][idx]
+                    vent_rafales = rep['hourly']['wind_gusts_10m'][idx] # Les rafales !
                     vent_d = rep['hourly']['wind_direction_10m'][idx]
+                    
+                    directions = ["N", "NE", "E", "SE", "S", "SO", "O", "NO", "N"]
+                    dir_texte = directions[round(vent_d / 45) % 8]
                     sens_vent = direction_vent_relative(cp["Cap"], vent_d)
                     
+                    # Séparation en colonnes distinctes
                     cp["Temp (°C)"] = f"{temp}°"
                     cp["Pluie"] = f"{pluie}%"
-                    cp["Vent"] = f"{vent_v} km/h {sens_vent}"
+                    cp["Vent (km/h)"] = vent_v
+                    cp["Rafales (km/h)"] = vent_rafales
+                    cp["Dir. Vent"] = dir_texte
+                    cp["Effet Vent"] = sens_vent
                 else:
-                    cp["Temp (°C)"], cp["Pluie"], cp["Vent"] = "-", "-", "-"
+                    cp["Temp (°C)"], cp["Pluie"], cp["Vent (km/h)"], cp["Rafales (km/h)"], cp["Dir. Vent"], cp["Effet Vent"] = "-", "-", "-", "-", "-", "-"
             except:
-                cp["Temp (°C)"], cp["Pluie"], cp["Vent"] = "Err", "Err", "Err"
+                cp["Temp (°C)"], cp["Pluie"], cp["Vent (km/h)"], cp["Rafales (km/h)"], cp["Dir. Vent"], cp["Effet Vent"] = "Err", "Err", "Err", "Err", "Err", "Err"
             
             del cp['lat'], cp['lon'], cp['Heure_API'], cp['Cap']
             resultats_meteo.append(cp)
