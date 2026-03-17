@@ -41,10 +41,18 @@ st.title("🚴‍♂️ Mon Parcours Vélo & Météo")
 st.write("Anticipez la météo, le vent et analysez vos montées !")
 
 st.sidebar.header("Vos paramètres")
-# NOUVEAU : Ajout du choix de la date !
 date_depart_choisie = st.sidebar.date_input("Date de départ", value=date.today())
 heure_depart = st.sidebar.time_input("Heure de départ")
 vitesse_moyenne = st.sidebar.number_input("Vitesse moyenne sur le plat (km/h)", value=25)
+
+# NOUVEAU : Choix de l'intervalle météo
+intervalle_min = st.sidebar.selectbox(
+    "Intervalle des points météo", 
+    options=[5, 10, 15], 
+    index=1, 
+    format_func=lambda x: f"Toutes les {x} min"
+)
+intervalle_sec = intervalle_min * 60 # Conversion en secondes pour le moteur
 
 info_fuseau = st.sidebar.empty()
 info_fuseau.info("🌍 Fuseau horaire : En attente du tracé...")
@@ -85,7 +93,6 @@ if fichier_gpx is not None:
         prochain_checkpoint_sec = 0 
         cap_actuel = 0
         
-        # NOUVEAU : On combine la date choisie par l'utilisateur avec l'heure
         date_depart = datetime.combine(date_depart_choisie, heure_depart)
 
         for i in range(1, len(points_gpx)):
@@ -118,13 +125,13 @@ if fichier_gpx is not None:
                 heure_passage = date_depart + timedelta(seconds=temps_total_sec)
                 checkpoints.append({
                     "lat": p2.latitude, "lon": p2.longitude, "Cap": cap_actuel,
-                    # On affiche maintenant le jour et l'heure dans le tableau si on dépasse minuit
                     "Heure": heure_passage.strftime("%d/%m %H:%M"),
                     "Heure_API": heure_passage.replace(minute=0, second=0).strftime("%Y-%m-%dT%H:00"),
                     "Km": round(distance_totale_m / 1000, 1),
                     "Alt (m)": int(p2.elevation) if p2.elevation else 0
                 })
-                prochain_checkpoint_sec += 600
+                # NOUVEAU : On utilise la variable choisie par l'utilisateur !
+                prochain_checkpoint_sec += intervalle_sec
 
         heure_arrivee = date_depart + timedelta(seconds=temps_total_sec)
         p_final = points_gpx[-1]
