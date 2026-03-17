@@ -10,7 +10,6 @@ import math
 
 # --- FONCTIONS MATHÉMATIQUES POUR LE VENT ---
 def calculer_cap(lat1, lon1, lat2, lon2):
-    """Calcule la direction (le cap) de la route entre deux points GPS en degrés"""
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
     dlon = lon2 - lon1
     x = math.sin(dlon) * math.cos(lat2)
@@ -19,7 +18,6 @@ def calculer_cap(lat1, lon1, lat2, lon2):
     return (math.degrees(cap_initial) + 360) % 360
 
 def direction_vent_relative(cap_velo, dir_vent):
-    """Compare le cap du vélo et la provenance du vent pour dire Face, Dos ou Côté"""
     diff = (dir_vent - cap_velo) % 360
     if diff <= 45 or diff >= 315:
         return "⬇️ Face"
@@ -52,9 +50,27 @@ if fichier_gpx is not None:
                 points_gpx.append(point)
     
     if len(points_gpx) > 0:
+        
+        # --- NOUVEAU : DÉTECTION DU FUSEAU HORAIRE ---
+        lat_depart = points_gpx[0].latitude
+        lon_depart = points_gpx[0].longitude
+        url_tz = f"https://api.open-meteo.com/v1/forecast?latitude={lat_depart}&longitude={lon_depart}&current=temperature_2m&timezone=auto"
+        
+        try:
+            rep_tz = requests.get(url_tz).json()
+            fuseau_horaire = rep_tz.get("timezone", "Inconnu")
+            # On récupère la vraie date locale du point de départ
+            date_str = rep_tz['current']['time'][:10] 
+            date_locale = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except:
+            fuseau_horaire = "Erreur de détection"
+            date_locale = date.today()
+
+        st.info(f"🌍 Fuseau horaire détecté pour ce parcours : **{fuseau_horaire}**")
+
+        # --- PRÉ-CALCULS ---
         checkpoints = []
         profil_data = []
-        
         distance_totale_m = 0
         d_plus_total = 0
         d_moins_total = 0
@@ -62,7 +78,8 @@ if fichier_gpx is not None:
         prochain_checkpoint_sec = 0 
         cap_actuel = 0
         
-        date_depart = datetime.combine(date.today(), heure_depart)
+        # On utilise la vraie date locale plutôt que la date du serveur !
+        date_depart = datetime.combine(date_locale, heure_depart)
 
         for i in range(1, len(points_gpx)):
             p1 = points_gpx[i-1]
@@ -87,9 +104,7 @@ if fichier_gpx is not None:
             distance_totale_m += dist
             temps_total_sec += temps_sec
             
-            # On met à jour la direction du vélo à chaque petit segment
             cap_actuel = calculer_cap(p1.latitude, p1.longitude, p2.latitude, p2.longitude)
-
             profil_data.append({"Distance (km)": distance_totale_m / 1000, "Altitude (m)": p2.elevation})
 
             if temps_total_sec >= prochain_checkpoint_sec:
@@ -119,8 +134,6 @@ if fichier_gpx is not None:
         carte_parcours = folium.Map(location=point_depart, zoom_start=12)
         coordonnees = [[p.latitude, p.longitude] for p in points_gpx]
         folium.PolyLine(coordonnees, color="blue", weight=5, opacity=0.8).add_to(carte_parcours)
-        
-        # LA MODIFICATION EST ICI : ajout de returned_objects=[]
         st_folium(carte_parcours, width=700, height=400, returned_objects=[])
 
         st.write("### 📊 Résumé du parcours")
@@ -161,7 +174,6 @@ if fichier_gpx is not None:
                     vent_v = rep['hourly']['wind_speed_10m'][idx]
                     vent_d = rep['hourly']['wind_direction_10m'][idx]
                     
-                    # C'est ici qu'on utilise notre nouvelle fonction !
                     sens_vent = direction_vent_relative(cp["Cap"], vent_d)
 
                     cp["Temp (°C)"] = f"{temp}°"
@@ -172,7 +184,6 @@ if fichier_gpx is not None:
             except:
                 cp["Temp (°C)"], cp["Pluie"], cp["Vent"] = "Err", "Err", "Err"
             
-            # Nettoyage des données techniques
             del cp['lat'], cp['lon'], cp['Heure_API'], cp['Cap']
             resultats_meteo.append(cp)
             barre_progression.progress((i + 1) / len(checkpoints))
