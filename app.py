@@ -5,6 +5,30 @@ import folium
 from streamlit_folium import st_folium
 import requests
 from datetime import datetime, timedelta, date
+import matplotlib.pyplot as plt
+import math
+
+# --- FONCTIONS MATHÉMATIQUES POUR LE VENT ---
+def calculer_cap(lat1, lon1, lat2, lon2):
+    """Calcule la direction (le cap) de la route entre deux points GPS en degrés"""
+    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+    dlon = lon2 - lon1
+    x = math.sin(dlon) * math.cos(lat2)
+    y = math.cos(lat1) * math.sin(lat2) - (math.sin(lat1) * math.cos(lat2) * math.cos(dlon))
+    cap_initial = math.atan2(x, y)
+    return (math.degrees(cap_initial) + 360) % 360
+
+def direction_vent_relative(cap_velo, dir_vent):
+    """Compare le cap du vélo et la provenance du vent pour dire Face, Dos ou Côté"""
+    diff = (dir_vent - cap_velo) % 360
+    if diff <= 45 or diff >= 315:
+        return "⬇️ Face"
+    elif 135 <= diff <= 225:
+        return "⬆️ Dos"
+    elif 45 < diff < 135:
+        return "↘️ Côté (Droit)"
+    else:
+        return "↙️ Côté (Gauche)"
 
 # --- 1. TITRE ET PARAMÈTRES ---
 st.title("🚴‍♂️ Mon Parcours Vélo & Météo")
@@ -28,15 +52,15 @@ if fichier_gpx is not None:
                 points_gpx.append(point)
     
     if len(points_gpx) > 0:
-        # --- PRE-CALCULS POUR LE RÉSUMÉ ET LE GRAPHIQUE ---
         checkpoints = []
-        profil_data = [] # Pour stocker les données du graphique altimétrique
+        profil_data = []
         
         distance_totale_m = 0
         d_plus_total = 0
         d_moins_total = 0
         temps_total_sec = 0
         prochain_checkpoint_sec = 0 
+        cap_actuel = 0
         
         date_depart = datetime.combine(date.today(), heure_depart)
 
@@ -44,11 +68,9 @@ if fichier_gpx is not None:
             p1 = points_gpx[i-1]
             p2 = points_gpx[i]
 
-            # Distance
             dist = p1.distance_2d(p2)
             if dist is None: dist = 0
             
-            # Dénivelé Positif et Négatif
             d_plus_local = 0
             if p2.elevation and p1.elevation:
                 diff_alt = p2.elevation - p1.elevation
@@ -58,22 +80,22 @@ if fichier_gpx is not None:
                 elif diff_alt < 0:
                     d_moins_total += abs(diff_alt)
 
-            # Règle d'effort pour le temps
             dist_ajustee = dist + (d_plus_local * 10)
             vitesse_ms = (vitesse_moyenne * 1000) / 3600
             temps_sec = dist_ajustee / vitesse_ms if vitesse_ms > 0 else 0
 
             distance_totale_m += dist
             temps_total_sec += temps_sec
+            
+            # On met à jour la direction du vélo à chaque petit segment
+            cap_actuel = calculer_cap(p1.latitude, p1.longitude, p2.latitude, p2.longitude)
 
-            # On enregistre les données pour le graphique d'altitude
             profil_data.append({"Distance (km)": distance_totale_m / 1000, "Altitude (m)": p2.elevation})
 
-            # Checkpoints Météo (toutes les 10 min)
             if temps_total_sec >= prochain_checkpoint_sec:
                 heure_passage = date_depart + timedelta(seconds=temps_total_sec)
                 checkpoints.append({
-                    "lat": p2.latitude, "lon": p2.longitude,
+                    "lat": p2.latitude, "lon": p2.longitude, "Cap": cap_actuel,
                     "Heure": heure_passage.strftime("%H:%M"),
                     "Heure_API": heure_passage.replace(minute=0, second=0).strftime("%Y-%m-%dT%H:00"),
                     "Km": round(distance_totale_m / 1000, 1),
@@ -81,20 +103,17 @@ if fichier_gpx is not None:
                 })
                 prochain_checkpoint_sec += 600
 
-        # Ajout du point d'arrivée final
         heure_arrivee = date_depart + timedelta(seconds=temps_total_sec)
         p_final = points_gpx[-1]
         checkpoints.append({
-            "lat": p_final.latitude, "lon": p_final.longitude,
+            "lat": p_final.latitude, "lon": p_final.longitude, "Cap": cap_actuel,
             "Heure": heure_arrivee.strftime("%H:%M") + " (Arrivée)",
             "Heure_API": heure_arrivee.replace(minute=0, second=0).strftime("%Y-%m-%dT%H:00"),
             "Km": round(distance_totale_m / 1000, 1),
             "Alt (m)": int(p_final.elevation) if p_final.elevation else 0
         })
 
-        # --- 4. AFFICHAGE DES ÉLÉMENTS VISUELS ---
-        
-        # 4.1 La Carte
+        # --- 4. AFFICHAGE VISUEL ---
         st.write("### 📍 Votre itinéraire")
         point_depart = [points_gpx[0].latitude, points_gpx[0].longitude]
         carte_parcours = folium.Map(location=point_depart, zoom_start=12)
@@ -102,34 +121,24 @@ if fichier_gpx is not None:
         folium.PolyLine(coordonnees, color="blue", weight=5, opacity=0.8).add_to(carte_parcours)
         st_folium(carte_parcours, width=700, height=400)
 
-        # 4.2 Le Résumé du parcours (Bandeau de métriques)
         st.write("### 📊 Résumé du parcours")
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Distance", f"{round(distance_totale_m / 1000, 1)} km")
         col2.metric("Dénivelé +", f"{int(d_plus_total)} m")
         col3.metric("Dénivelé -", f"{int(d_moins_total)} m")
-        
         heures = int(temps_total_sec // 3600)
         minutes = int((temps_total_sec % 3600) // 60)
         col4.metric("Durée estimée", f"{heures}h {minutes:02d}m")
 
-        # 4.3 Le Graphique du dénivelé
+        st.write("### ⛰️ Profil altimétrique")
         df_profil = pd.DataFrame(profil_data)
-        
-        # Création d'un graphique fixe avec Matplotlib
         fig, ax = plt.subplots(figsize=(10, 3))
         ax.fill_between(df_profil["Distance (km)"], df_profil["Altitude (m)"], color="#3b82f6", alpha=0.3)
         ax.plot(df_profil["Distance (km)"], df_profil["Altitude (m)"], color="#3b82f6", linewidth=2)
-        
-        # Mise en forme (quadrillage, textes)
         ax.set_xlabel("Distance (km)", color="gray")
         ax.set_ylabel("Altitude (m)", color="gray")
         ax.grid(True, linestyle='--', alpha=0.5)
-        
-        # Affichage de l'image fixe sur le site
         st.pyplot(fig)
-        # On affiche un joli graphique rempli
-        st.area_chart(df_profil, x="Distance (km)", y="Altitude (m)")
 
         # --- 5. INTERROGATION DE LA MÉTÉO ---
         st.write("### ⏱️ Vos conditions de route")
@@ -150,18 +159,19 @@ if fichier_gpx is not None:
                     vent_v = rep['hourly']['wind_speed_10m'][idx]
                     vent_d = rep['hourly']['wind_direction_10m'][idx]
                     
-                    directions = ["N", "NE", "E", "SE", "S", "SO", "O", "NO", "N"]
-                    dir_texte = directions[round(vent_d / 45) % 8]
+                    # C'est ici qu'on utilise notre nouvelle fonction !
+                    sens_vent = direction_vent_relative(cp["Cap"], vent_d)
 
                     cp["Temp (°C)"] = f"{temp}°"
                     cp["Pluie"] = f"{pluie}%"
-                    cp["Vent"] = f"{vent_v} km/h ({dir_texte})"
+                    cp["Vent"] = f"{vent_v} km/h {sens_vent}"
                 else:
                     cp["Temp (°C)"], cp["Pluie"], cp["Vent"] = "-", "-", "-"
             except:
                 cp["Temp (°C)"], cp["Pluie"], cp["Vent"] = "Err", "Err", "Err"
             
-            del cp['lat'], cp['lon'], cp['Heure_API']
+            # Nettoyage des données techniques
+            del cp['lat'], cp['lon'], cp['Heure_API'], cp['Cap']
             resultats_meteo.append(cp)
             barre_progression.progress((i + 1) / len(checkpoints))
 
