@@ -114,8 +114,20 @@ if fichier_gpx is not None:
         col4.metric("Durée estimée", f"{heures}h {minutes:02d}m")
 
         # 4.3 Le Graphique du dénivelé
-        st.write("### ⛰️ Profil altimétrique")
         df_profil = pd.DataFrame(profil_data)
+        
+        # Création d'un graphique fixe avec Matplotlib
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.fill_between(df_profil["Distance (km)"], df_profil["Altitude (m)"], color="#3b82f6", alpha=0.3)
+        ax.plot(df_profil["Distance (km)"], df_profil["Altitude (m)"], color="#3b82f6", linewidth=2)
+        
+        # Mise en forme (quadrillage, textes)
+        ax.set_xlabel("Distance (km)", color="gray")
+        ax.set_ylabel("Altitude (m)", color="gray")
+        ax.grid(True, linestyle='--', alpha=0.5)
+        
+        # Affichage de l'image fixe sur le site
+        st.pyplot(fig)
         # On affiche un joli graphique rempli
         st.area_chart(df_profil, x="Distance (km)", y="Altitude (m)")
 
