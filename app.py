@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, date
 import matplotlib.pyplot as plt
 import math
 
-# --- FONCTIONS MATHÉMATIQUES ---
+# --- FONCTIONS MATHÉMATIQUES ET TRADUCTEURS ---
 def calculer_cap(lat1, lon1, lat2, lon2):
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
     dlon = lon2 - lon1
@@ -36,6 +36,18 @@ def categoriser_ascension(distance_m, d_plus):
     elif score >= 15: return "🔵 4ème Catég."
     else: return "⚪ Non classée"
 
+# NOUVEAU : Le traducteur de météo en émojis
+def obtenir_icone_meteo(code):
+    if code == 0: return "☀️ Clair"
+    elif code in [1, 2]: return "⛅ Éclaircies"
+    elif code == 3: return "☁️ Couvert"
+    elif code in [45, 48]: return "🌫️ Brouillard"
+    elif code in [51, 53, 55, 56, 57]: return "🌦️ Bruine"
+    elif code in [61, 63, 65, 66, 67, 80, 81, 82]: return "🌧️ Pluie"
+    elif code in [71, 73, 75, 77, 85, 86]: return "❄️ Neige"
+    elif code in [95, 96, 99]: return "⛈️ Orage"
+    else: return "❓ Inconnu"
+
 # --- 1. TITRE ET PARAMÈTRES ---
 st.title("🚴‍♂️ Mon Parcours Vélo & Météo")
 st.write("Anticipez la météo, le vent et analysez vos montées !")
@@ -45,14 +57,13 @@ date_depart_choisie = st.sidebar.date_input("Date de départ", value=date.today(
 heure_depart = st.sidebar.time_input("Heure de départ")
 vitesse_moyenne = st.sidebar.number_input("Vitesse moyenne sur le plat (km/h)", value=25)
 
-# NOUVEAU : Choix de l'intervalle météo
 intervalle_min = st.sidebar.selectbox(
     "Intervalle des points météo", 
     options=[5, 10, 15], 
     index=1, 
     format_func=lambda x: f"Toutes les {x} min"
 )
-intervalle_sec = intervalle_min * 60 # Conversion en secondes pour le moteur
+intervalle_sec = intervalle_min * 60
 
 info_fuseau = st.sidebar.empty()
 info_fuseau.info("🌍 Fuseau horaire : En attente du tracé...")
@@ -130,7 +141,6 @@ if fichier_gpx is not None:
                     "Km": round(distance_totale_m / 1000, 1),
                     "Alt (m)": int(p2.elevation) if p2.elevation else 0
                 })
-                # NOUVEAU : On utilise la variable choisie par l'utilisateur !
                 prochain_checkpoint_sec += intervalle_sec
 
         heure_arrivee = date_depart + timedelta(seconds=temps_total_sec)
@@ -256,7 +266,8 @@ if fichier_gpx is not None:
         barre_progression = st.progress(0)
 
         for i, cp in enumerate(checkpoints):
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={cp['lat']}&longitude={cp['lon']}&hourly=temperature_2m,precipitation_probability,wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=auto"
+            # NOUVEAU : On ajoute 'weathercode' dans l'URL pour récupérer l'état du ciel
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={cp['lat']}&longitude={cp['lon']}&hourly=temperature_2m,precipitation_probability,weathercode,wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=auto"
             try:
                 rep = requests.get(url).json()
                 heures_api = rep['hourly']['time']
@@ -264,6 +275,7 @@ if fichier_gpx is not None:
                     idx = heures_api.index(cp['Heure_API'])
                     temp = rep['hourly']['temperature_2m'][idx]
                     pluie = rep['hourly']['precipitation_probability'][idx]
+                    code_ciel = rep['hourly']['weathercode'][idx] # Le fameux code
                     vent_v = rep['hourly']['wind_speed_10m'][idx]
                     vent_rafales = rep['hourly']['wind_gusts_10m'][idx]
                     vent_d = rep['hourly']['wind_direction_10m'][idx]
@@ -272,16 +284,18 @@ if fichier_gpx is not None:
                     dir_texte = directions[round(vent_d / 45) % 8]
                     sens_vent = direction_vent_relative(cp["Cap"], vent_d)
                     
+                    # On crée la nouvelle colonne Ciel avec notre fonction
+                    cp["Ciel"] = obtenir_icone_meteo(code_ciel)
                     cp["Temp (°C)"] = f"{temp}°"
                     cp["Pluie"] = f"{pluie}%"
                     cp["Vent (km/h)"] = vent_v
-                    cp["Rafales (km/h)"] = vent_rafales
-                    cp["Dir. Vent"] = dir_texte
+                    cp["Rafales"] = vent_rafales
+                    cp["Dir."] = dir_texte
                     cp["Effet Vent"] = sens_vent
                 else:
-                    cp["Temp (°C)"], cp["Pluie"], cp["Vent (km/h)"], cp["Rafales (km/h)"], cp["Dir. Vent"], cp["Effet Vent"] = "-", "-", "-", "-", "-", "-"
+                    cp["Ciel"], cp["Temp (°C)"], cp["Pluie"], cp["Vent (km/h)"], cp["Rafales"], cp["Dir."], cp["Effet Vent"] = "-", "-", "-", "-", "-", "-", "-"
             except:
-                cp["Temp (°C)"], cp["Pluie"], cp["Vent (km/h)"], cp["Rafales (km/h)"], cp["Dir. Vent"], cp["Effet Vent"] = "Err", "Err", "Err", "Err", "Err", "Err"
+                cp["Ciel"], cp["Temp (°C)"], cp["Pluie"], cp["Vent (km/h)"], cp["Rafales"], cp["Dir."], cp["Effet Vent"] = "Err", "Err", "Err", "Err", "Err", "Err", "Err"
             
             del cp['lat'], cp['lon'], cp['Heure_API'], cp['Cap']
             resultats_meteo.append(cp)
