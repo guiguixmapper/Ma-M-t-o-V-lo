@@ -32,12 +32,11 @@ if fichier_gpx is not None:
         point_depart = [points_gpx[0].latitude, points_gpx[0].longitude]
         carte_parcours = folium.Map(location=point_depart, zoom_start=12)
         
-        # On trace le parcours sur la carte
         coordonnees = [[p.latitude, p.longitude] for p in points_gpx]
         folium.PolyLine(coordonnees, color="blue", weight=5, opacity=0.8).add_to(carte_parcours)
         st_folium(carte_parcours, width=700, height=400)
 
-        # --- 4. LE MOTEUR DE CALCUL (Temps + Dénivelé) ---
+        # --- 4. LE MOTEUR DE CALCUL ---
         st.write("### ⏱️ Calcul des conditions de route...")
         
         checkpoints = []
@@ -45,14 +44,12 @@ if fichier_gpx is not None:
         temps_total_sec = 0
         prochain_checkpoint_sec = 0 
         
-        # On associe l'heure de départ à la date d'aujourd'hui
         date_depart = datetime.combine(date.today(), heure_depart)
 
         for i in range(1, len(points_gpx)):
             p1 = points_gpx[i-1]
             p2 = points_gpx[i]
 
-            # Calcul distance et dénivelé
             dist = p1.distance_2d(p2)
             if dist is None: dist = 0
             
@@ -60,17 +57,14 @@ if fichier_gpx is not None:
             if p2.elevation and p1.elevation and p2.elevation > p1.elevation:
                 d_plus = p2.elevation - p1.elevation
 
-            # Règle d'effort : 1m D+ = 10m plat (donc 100m D+ = 1km plat)
             dist_ajustee = dist + (d_plus * 10)
             
-            # Temps passé sur ce petit tronçon
             vitesse_ms = (vitesse_moyenne * 1000) / 3600
             temps_sec = dist_ajustee / vitesse_ms if vitesse_ms > 0 else 0
 
             distance_totale_m += dist
             temps_total_sec += temps_sec
 
-            # Si on franchit un palier de 10 minutes (600 secondes)
             if temps_total_sec >= prochain_checkpoint_sec:
                 heure_passage = date_depart + timedelta(seconds=temps_total_sec)
                 
@@ -82,7 +76,19 @@ if fichier_gpx is not None:
                     "Km": round(distance_totale_m / 1000, 1),
                     "Alt (m)": int(p2.elevation) if p2.elevation else 0
                 })
-                prochain_checkpoint_sec += 600 # On vise les prochaines 10 min
+                prochain_checkpoint_sec += 600
+
+        # NOUVEAU : On force l'ajout du point d'arrivée
+        heure_arrivee = date_depart + timedelta(seconds=temps_total_sec)
+        p_final = points_gpx[-1]
+        checkpoints.append({
+            "lat": p_final.latitude,
+            "lon": p_final.longitude,
+            "Heure": heure_arrivee.strftime("%H:%M") + " (Arrivée)",
+            "Heure_API": heure_arrivee.replace(minute=0, second=0).strftime("%Y-%m-%dT%H:00"),
+            "Km": round(distance_totale_m / 1000, 1),
+            "Alt (m)": int(p_final.elevation) if p_final.elevation else 0
+        })
 
         # --- 5. INTERROGATION DE LA MÉTÉO ---
         resultats_meteo = []
@@ -102,7 +108,6 @@ if fichier_gpx is not None:
                     vent_v = rep['hourly']['wind_speed_10m'][idx]
                     vent_d = rep['hourly']['wind_direction_10m'][idx]
                     
-                    # Traduire les degrés du vent en direction lisible (N, S, E, O...)
                     directions = ["N", "NE", "E", "SE", "S", "SO", "O", "NO", "N"]
                     dir_texte = directions[round(vent_d / 45) % 8]
 
@@ -114,11 +119,8 @@ if fichier_gpx is not None:
             except:
                 cp["Temp (°C)"], cp["Pluie"], cp["Vent"] = "Err", "Err", "Err"
             
-            # On supprime les données techniques avant d'afficher le tableau
             del cp['lat'], cp['lon'], cp['Heure_API']
             resultats_meteo.append(cp)
-            
-            # Fait avancer la petite barre de chargement
             barre_progression.progress((i + 1) / len(checkpoints))
 
         # --- 6. AFFICHAGE DU TABLEAU FINAL ---
