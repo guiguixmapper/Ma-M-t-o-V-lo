@@ -854,12 +854,6 @@ def main():
             help="Optionnel. Génère un résumé intelligent de ta sortie. "
                  "Clé gratuite sur aistudio.google.com."
         )
-        gemini_key = st.text_input(
-            "🤖 Clé API Gemini",
-            value="", type="password",
-            help="Optionnel. Génère un résumé intelligent de ta sortie. "
-                 "Clé gratuite sur aistudio.google.com."
-        )
 
     ph_fuseau = st.sidebar.empty()
     ph_fuseau.info("🌍 Fuseau : en attente…")
