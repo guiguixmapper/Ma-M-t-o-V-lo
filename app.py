@@ -1,8 +1,9 @@
 """
-🚴‍♂️ Vélo & Météo — v7
-Nouveautés v7 :
-    - Suppression ORS (routing inutile sans adaptation vitesse, elevation faux)
-    - Noms des cols via OpenStreetMap / Overpass (couverture élargie)
+🚴‍♂️ Vélo & Météo — v6
+Nouveautés v6 :
+    - Correction altimétrique exclusivement via OpenRouteService (précis et lissé)
+    - Noms des cols via OpenStreetMap / Overpass (Méthode Sniper + Retry)
+    - Temps de parcours via OpenRouteService (clé API requise)
     - Calques sur la carte pour alléger l'affichage
 """
 
@@ -748,7 +749,7 @@ def main():
         if not df_profil.empty:
             st.plotly_chart(
                 creer_figure_profil(df_profil, ascensions, vitesse, ref_val, mode, poids, idx_survol),
-                use_container_width=True)
+                width='stretch')
         st.markdown(f"**Zones d'entraînement ({lbl_mode}) :**")
         cols_z = st.columns(6)
         for j, (_, _, num, lbl, coul) in enumerate(zones_actives(mode)):
@@ -762,7 +763,7 @@ def main():
             st.warning("⚠️ Données météo indisponibles.")
         else:
             st.caption("Température · Vent & Rafales · Probabilité de pluie.")
-            st.plotly_chart(creer_figure_meteo(resultats), use_container_width=True)
+            st.plotly_chart(creer_figure_meteo(resultats), width='stretch')
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown("**Température** — 🟣 <5° · 🔵 5–15° · 🟢 15–22° (idéal) · 🟠 22–30° · 🔴 >30°C")
@@ -788,7 +789,7 @@ def main():
                         "Dénivelé","Pente moy.","Pente max","Alt. sommet",
                         "Score UCI","Temps col","Arrivée sommet","Puissance","Effort val","Zone","Effort"]
             st.dataframe(pd.DataFrame(ascensions)[cols_aff],
-                use_container_width=True, hide_index=True,
+                width='stretch', hide_index=True,
                 column_config={
                     "Nom":            st.column_config.TextColumn("🏔️ Nom OSM"),
                     "Effort val":     st.column_config.TextColumn("% FTP" if mode=="⚡ Puissance" else "FC estimée"),
@@ -817,7 +818,7 @@ def main():
             if not df_profil.empty:
                 fig_col = creer_figure_col(df_profil, asc_sel, nb_segments=nb_segs)
                 if fig_col:
-                    st.plotly_chart(fig_col, use_container_width=True)
+                    st.plotly_chart(fig_col, width='stretch')
                 st.markdown("**Intensité de pente :** 🟢 <3% · 🟡 3–6% · 🟠 6–8% · 🔴 8–12% · 🟤 >12%")
         else:
             st.success("🚴‍♂️ Aucune difficulté catégorisée — parcours roulant !")
@@ -838,7 +839,7 @@ def main():
                 "Direction": cp.get("Dir","—"),
                 "Effet vent": cp.get("effet","—"),
             })
-        st.dataframe(pd.DataFrame(lignes), use_container_width=True, hide_index=True,
+        st.dataframe(pd.DataFrame(lignes), width='stretch', hide_index=True,
             column_config={
                 "Heure":       st.column_config.TextColumn("🕐 Heure"),
                 "Km":          st.column_config.NumberColumn("📏 Km"),
