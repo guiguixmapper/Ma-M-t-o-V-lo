@@ -500,18 +500,29 @@ def main():
     st.sidebar.divider()
     with st.sidebar.expander("🏔️ Détection des montées", expanded=False):
         st.caption("Ajustez si des montées sont ratées ou découpées.")
-        seuil_debut = st.slider("Seuil de départ (%)", 0.5, 5.0,
-            float(climbing_module.SEUIL_DEBUT), 0.5,
+
+        # Initialisation session_state avec les valeurs par défaut du module
+        if "seuil_debut" not in st.session_state:
+            st.session_state.seuil_debut = float(climbing_module.SEUIL_DEBUT)
+        if "seuil_fin" not in st.session_state:
+            st.session_state.seuil_fin = float(climbing_module.SEUIL_FIN)
+        if "fusion_m" not in st.session_state:
+            st.session_state.fusion_m = int(climbing_module.MAX_DESCENTE_FUSION_M)
+
+        st.slider("Seuil de départ (%)", 0.5, 5.0, step=0.5,
+            key="seuil_debut",
             help="Pente minimale pour démarrer une montée.")
-        seuil_fin   = st.slider("Seuil de fin (%)", 0.0, 3.0,
-            float(climbing_module.SEUIL_FIN), 0.5,
+        st.slider("Seuil de fin (%)", 0.0, 3.0, step=0.5,
+            key="seuil_fin",
             help="Pente en dessous de laquelle la montée est terminée.")
-        fusion_m    = st.slider("Fusion (D− max entre 2 montées, m)", 10, 200,
-            int(climbing_module.MAX_DESCENTE_FUSION_M), 10,
+        st.slider("Fusion (D− max entre 2 montées, m)", 10, 200, step=10,
+            key="fusion_m",
             help="Deux montées séparées par moins que cette valeur sont fusionnées.")
-        climbing_module.SEUIL_DEBUT           = seuil_debut
-        climbing_module.SEUIL_FIN             = seuil_fin
-        climbing_module.MAX_DESCENTE_FUSION_M = fusion_m
+
+        # Injecter dans le module — les valeurs viennent du session_state, stables entre re-runs
+        climbing_module.SEUIL_DEBUT           = st.session_state.seuil_debut
+        climbing_module.SEUIL_FIN             = st.session_state.seuil_fin
+        climbing_module.MAX_DESCENTE_FUSION_M = st.session_state.fusion_m
 
     # ── OPTIONS AVANCÉES ──────────────────────────────────────────────────────
     st.sidebar.divider()
