@@ -501,9 +501,10 @@ def main():
     # ── DÉTECTION DES MONTÉES ─────────────────────────────────────────────────
     st.sidebar.divider()
     with st.sidebar.expander("🏔️ Détection des montées", expanded=False):
-        st.caption("Ajustez si des montées sont ratées ou découpées.")
 
-        # Initialisation session_state avec les valeurs par défaut du module
+        # Initialisation session_state
+        if "sensibilite" not in st.session_state:
+            st.session_state.sensibilite = 3
         if "seuil_debut" not in st.session_state:
             st.session_state.seuil_debut = float(climbing_module.SEUIL_DEBUT)
         if "seuil_fin" not in st.session_state:
@@ -511,17 +512,59 @@ def main():
         if "fusion_m" not in st.session_state:
             st.session_state.fusion_m = int(climbing_module.MAX_DESCENTE_FUSION_M)
 
-        st.slider("Seuil de départ (%)", 0.5, 5.0, step=0.5,
-            key="seuil_debut",
-            help="Pente minimale pour démarrer une montée.")
-        st.slider("Seuil de fin (%)", 0.0, 3.0, step=0.5,
-            key="seuil_fin",
-            help="Pente en dessous de laquelle la montée est terminée.")
-        st.slider("Fusion (D− max entre 2 montées, m)", 10, 200, step=10,
-            key="fusion_m",
-            help="Deux montées séparées par moins que cette valeur sont fusionnées.")
+        # ── Slider principal ──────────────────────────────────────────────────
+        SENSIBILITE_LABELS = {
+            1: "🔵 Strict — grands cols seulement",
+            2: "🟢 Conservateur",
+            3: "🟡 Équilibré (défaut)",
+            4: "🟠 Sensible",
+            5: "🔴 Maximum — toutes les côtes",
+        }
+        # Paramètres correspondant à chaque niveau de sensibilité
+        # (seuil_debut, seuil_fin, fusion_m)
+        SENSIBILITE_PARAMS = {
+            1: (4.0, 2.0,  20),
+            2: (3.0, 1.5,  35),
+            3: (2.0, 1.0,  50),
+            4: (1.5, 0.5,  70),
+            5: (0.5, 0.0, 100),
+        }
 
-        # Injecter dans le module — les valeurs viennent du session_state, stables entre re-runs
+        st.slider("🎚️ Sensibilité de détection", 1, 5, step=1,
+            key="sensibilite",
+            help="Bas = seulement les vraies montées. Haut = capte toutes les côtes.")
+        niv = st.session_state.sensibilite
+        st.caption(SENSIBILITE_LABELS[niv])
+
+        # Bouton reset
+        if st.button("↺ Réinitialiser", use_container_width=True):
+            st.session_state.sensibilite = 3
+            st.session_state.seuil_debut, st.session_state.seuil_fin, st.session_state.fusion_m = SENSIBILITE_PARAMS[3]
+            st.rerun()
+
+        # ── Réglages fins ─────────────────────────────────────────────────────
+        with st.expander("⚙️ Réglages fins", expanded=False):
+            st.caption("Synchronisés avec la sensibilité — modifiez pour affiner.")
+
+            # Sync depuis sensibilité si changée
+            sd_sync, sf_sync, fm_sync = SENSIBILITE_PARAMS[niv]
+            if st.session_state.get("_last_sensibilite") != niv:
+                st.session_state.seuil_debut = sd_sync
+                st.session_state.seuil_fin   = sf_sync
+                st.session_state.fusion_m    = fm_sync
+                st.session_state["_last_sensibilite"] = niv
+
+            st.slider("Seuil de départ (%)", 0.5, 5.0, step=0.5,
+                key="seuil_debut",
+                help="Pente minimale pour démarrer une montée.")
+            st.slider("Seuil de fin (%)", 0.0, 3.0, step=0.5,
+                key="seuil_fin",
+                help="Pente en dessous de laquelle la montée est terminée.")
+            st.slider("Fusion (D− max, m)", 10, 200, step=10,
+                key="fusion_m",
+                help="Descente max pour fusionner deux runs en une seule montée.")
+
+        # Injecter dans le module
         climbing_module.SEUIL_DEBUT           = st.session_state.seuil_debut
         climbing_module.SEUIL_FIN             = st.session_state.seuil_fin
         climbing_module.MAX_DESCENTE_FUSION_M = st.session_state.fusion_m
