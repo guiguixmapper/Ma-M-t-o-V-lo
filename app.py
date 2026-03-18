@@ -366,9 +366,9 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
     carte = folium.Map(**kwargs)
     
     # 1. On crée nos "calques" (FeatureGroups)
-    fg_trace = folium.FeatureGroup(name="📍 Parcours", show=True)
+    fg_meteo = folium.FeatureGroup(name="🌤️ Météo",      show=True)
     fg_cols  = folium.FeatureGroup(name="🏔️ Ascensions", show=True)
-    fg_meteo = folium.FeatureGroup(name="🌤️ Météo", show=False) # Caché par défaut
+    fg_trace = folium.FeatureGroup(name="📍 Parcours",   show=True)
     
     # 2. On ajoute la ligne bleue et les drapeaux au calque "Parcours"
     folium.PolyLine([[p.latitude, p.longitude] for p in points_gpx],
@@ -450,65 +450,65 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
                 f" {vv} km/h", sticky=True),
             icon=folium.Icon(color="blue", icon="info-sign")).add_to(fg_meteo)
 
-    # 5. Ordre : Météo en premier dans la légende, puis Ascensions, puis Parcours
+    # 5. Ordre d'ajout = ordre dans la légende : Météo en premier
     fg_meteo.add_to(carte)
     fg_cols.add_to(carte)
     fg_trace.add_to(carte)
 
-    # 6. Légende custom — remplace le LayerControl par défaut
-    legende_html = """
-    <div id="custom-legend" style="
-        position: fixed;
-        top: 12px; right: 12px;
-        background: white;
-        border-radius: 10px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.18);
-        padding: 10px 14px;
-        font-family: Arial, sans-serif;
-        font-size: 13px;
-        color: #1e293b;
-        z-index: 1000;
-        min-width: 160px;
-    ">
-        <div style="font-weight:700; font-size:12px; color:#64748b;
-                    letter-spacing:.5px; margin-bottom:8px; text-transform:uppercase;">
-            🗺️ Calques
-        </div>
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-bottom:6px;">
-            <input type="checkbox" id="cb-meteo" checked
-                onchange="toggleLayer('🌤️ Météo', this.checked)"
-                style="width:15px; height:15px; cursor:pointer; accent-color:#2563eb;">
-            <span>🌤️ Météo</span>
-        </label>
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-bottom:6px;">
-            <input type="checkbox" id="cb-cols" checked
-                onchange="toggleLayer('🏔️ Ascensions', this.checked)"
-                style="width:15px; height:15px; cursor:pointer; accent-color:#2563eb;">
-            <span>🏔️ Ascensions</span>
-        </label>
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-            <input type="checkbox" id="cb-trace" checked
-                onchange="toggleLayer('📍 Parcours', this.checked)"
-                style="width:15px; height:15px; cursor:pointer; accent-color:#2563eb;">
-            <span>📍 Parcours</span>
-        </label>
-    </div>
-    <script>
-    function toggleLayer(name, visible) {
-        document.querySelectorAll('.leaflet-pane .leaflet-overlay-pane > *').forEach(function(el) {});
-        // Utilise l'API Leaflet via la carte
-        var map = Object.values(window).find(v => v && v._leaflet_id && v.eachLayer);
-        if (!map) return;
-        map.eachLayer(function(layer) {
-            if (layer.options && layer.options.name === name) {
-                if (visible) { map.addLayer(layer); }
-                else         { map.removeLayer(layer); }
-            }
-        });
+    # 6. LayerControl natif Folium (fiable) + CSS pour l'habiller
+    folium.LayerControl(collapsed=False, position="topright").add_to(carte)
+
+    # Style de la légende Folium via CSS injecté
+    css_legende = """
+    <style>
+    .leaflet-control-layers {
+        border-radius: 10px !important;
+        border: none !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important;
+        padding: 0 !important;
+        overflow: hidden;
+        font-family: Arial, sans-serif !important;
     }
-    </script>
+    .leaflet-control-layers-expanded {
+        padding: 10px 14px !important;
+        min-width: 160px !important;
+    }
+    .leaflet-control-layers-list {
+        margin: 0 !important;
+    }
+    .leaflet-control-layers label {
+        display: flex !important;
+        align-items: center !important;
+        gap: 6px !important;
+        font-size: 13px !important;
+        color: #1e293b !important;
+        margin: 4px 0 !important;
+        cursor: pointer !important;
+    }
+    .leaflet-control-layers-separator {
+        display: none !important;
+    }
+    .leaflet-control-layers-overlays {
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 2px !important;
+    }
+    /* Titre custom au-dessus des calques */
+    .leaflet-control-layers-expanded::before {
+        content: "🗺️ Calques";
+        display: block;
+        font-weight: 700;
+        font-size: 11px;
+        color: #64748b;
+        letter-spacing: .5px;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid #e2e8f0;
+    }
+    </style>
     """
-    carte.get_root().html.add_child(folium.Element(legende_html))
+    carte.get_root().html.add_child(folium.Element(css_legende))
 
     return carte
 
