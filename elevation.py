@@ -1,50 +1,44 @@
 """
 elevation.py
 ============
-Correction du profil altimétrique via Open-Elevation API.
-
-L'API Open-Elevation fournit des altitudes issues de données SRTM (90m de résolution),
-ce qui est souvent plus fiable que les données GPS brutes des fichiers GPX,
-notamment pour les appareils d'entrée de gamme ou les exports Strava/Komoot.
-
-Fonctions publiques :
-    - corriger_profil(df)  → DataFrame avec altitudes corrigées (ou original si échec)
+Correction du profil altimétrique au choix : OpenRouteService (ORS) ou Open-Elevation (SRTM).
 """
 
 import streamlit as st
 import requests
 import logging
-import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 OPEN_ELEVATION_URL = "https://api.open-elevation.com/api/v1/lookup"
-BATCH_SIZE         = 100   # points par requête (limite API)
-MAX_POINTS         = 2000  # on sous-échantillonne si le GPX est plus dense
+ORS_ELEVATION_URL  = "https://api.openrouteservice.org/elevation/line"
+BATCH_SIZE         = 100   # points par requête (Open-Elevation)
+MAX_POINTS         = 2000  # limite de points par requête (ORS)
 
 
-def _sous_echantillonner(df, max_points=MAX_POINTS):
-    """
-    Réduit le DataFrame à max_points lignes régulièrement espacées.
-    Retourne aussi le pas d'échantillonnage pour la reconstruction.
-    """
-    n    = len(df)
-    if n <= max_points:
-        return df.copy(), 1
-    pas  = n // max_points
-    return df.iloc[::pas].copy().reset_index(drop=True), pas
+def _requete_ors_line(coords: list, api_key: str) -> list | None:
+    """Envoie un lot de points à ORS. coords = [[lon, lat], [lon, lat]...]"""
+    try:
+        headers = {
+            "Authorization": api_key,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "format_in": "polyline",
+            "format_out": "polyline",
+            "geometry": coords
+        }
+        r = requests.post(ORS_ELEVATION_URL, json=payload, headers=headers, timeout=20)
+        r.raise_for_status()
+        data = r.json().get("geometry", [])
+        return [pt[2] for pt in data if len(pt) >= 3]
+    except Exception as e:
+        logger.warning(f"ORS Elevation échoué : {e}")
+        return None
 
 
 def _requete_batch(locations: list) -> list | None:
-    """
-    Envoie un batch de points à Open-Elevation.
-
-    Args:
-        locations : liste de {"latitude": float, "longitude": float}
-
-    Returns:
-        Liste d'altitudes (floats) dans le même ordre, ou None si erreur.
-    """
+    """Envoie un batch de points à Open-Elevation (SRTM)."""
     try:
         r = requests.post(
             OPEN_ELEVATION_URL,
@@ -60,21 +54,7 @@ def _requete_batch(locations: list) -> list | None:
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def corriger_profil(lats_tuple: tuple, lons_tuple: tuple, alts_tuple: tuple) -> tuple:
-    """
-    Corrige les altitudes d'un profil GPX via Open-Elevation.
-
-    Prend des tuples (hashables pour le cache Streamlit).
-
-    Args:
-        lats_tuple : latitudes des points GPX
-        lons_tuple : longitudes des points GPX
-        alts_tuple : altitudes brutes du GPX (fallback si API échoue)
-
-    Returns:
-        Tuple d'altitudes corrigées (même longueur que l'entrée).
-        Retourne alts_tuple inchangé en cas d'échec.
-    """
+def corriger_profil(lats_tuple: tuple, lons_tuple: tuple, alts_tuple: tuple, api_key: str = "", methode: str = "srtm") -> tuple:
     lats = list(lats_tuple)
     lons = list(lons_tuple)
     alts = list(alts_tuple)
@@ -83,23 +63,42 @@ def corriger_profil(lats_tuple: tuple, lons_tuple: tuple, alts_tuple: tuple) -> 
     if n == 0:
         return alts_tuple
 
-    # Sous-échantillonnage si trop de points
-    indices_echantillon = list(range(0, n, max(1, n // MAX_POINTS)))
-    locations = [
-        {"latitude": lats[i], "longitude": lons[i]}
-        for i in indices_echantillon
-    ]
+    # Sous-échantillonnage pour éviter les doublons parfaits qui font planter les API
+    indices_echantillon = []
+    last_lon, last_lat = None, None
+    for i in range(0, n, max(1, n // MAX_POINTS)):
+        if lons[i] != last_lon or lats[i] != last_lat:
+            indices_echantillon.append(i)
+            last_lon, last_lat = lons[i], lats[i]
 
-    # Envoi par batches
     alts_corrigees_echantillon = []
-    for start in range(0, len(locations), BATCH_SIZE):
-        batch  = locations[start:start + BATCH_SIZE]
-        result = _requete_batch(batch)
-        if result is None:
-            logger.warning("Open-Elevation indisponible — profil GPS conservé.")
-            return alts_tuple
-        alts_corrigees_echantillon.extend(result)
 
+    # --- MÉTHODE ORS ---
+    if methode == "ors":
+        if not api_key:
+            logger.warning("Clé ORS manquante pour la correction altimétrique.")
+            return alts_tuple
+            
+        coords_ors = [[lons[i], lats[i]] for i in indices_echantillon]
+        res_ors = _requete_ors_line(coords_ors, api_key)
+        if res_ors and len(res_ors) == len(indices_echantillon):
+            alts_corrigees_echantillon = res_ors
+        else:
+            logger.warning("Erreur avec ORS Elevation. Conservation des altitudes d'origine.")
+            return alts_tuple
+
+    # --- MÉTHODE SRTM ---
+    elif methode == "srtm":
+        locations = [{"latitude": lats[i], "longitude": lons[i]} for i in indices_echantillon]
+        for start in range(0, len(locations), BATCH_SIZE):
+            batch  = locations[start:start + BATCH_SIZE]
+            result = _requete_batch(batch)
+            if result is None:
+                logger.warning("Open-Elevation indisponible — profil GPS conservé.")
+                return alts_tuple
+            alts_corrigees_echantillon.extend(result)
+
+    # Sécurité
     if len(alts_corrigees_echantillon) != len(indices_echantillon):
         return alts_tuple
 
