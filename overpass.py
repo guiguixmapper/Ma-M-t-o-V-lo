@@ -1,17 +1,22 @@
 """
-overpass.py — v2
+overpass.py — v3
 ================
-Détection des cols, sommets et points remarquables via l'API Overpass (OSM).
+Nommage des cols via Nominatim (OpenStreetMap) — bien plus rapide qu'Overpass.
 
-Améliorations v2 vs v1 :
-    - Couverture élargie : col, selle, sommet, lieu-dit montagneux, refuge
-    - Rayon de recherche augmenté (800m au lieu de 500m)
-    - Priorité aux nœuds de type col/selle sur les pics et refuges
-    - Filtre sur l'altitude OSM : on préfère le nœud dont l'altitude est
-      la plus proche de l'altitude GPX du sommet (évite les faux positifs
-      plaine/village homonyme)
-    - BBox large + association locale Python (une seule requête pour tout le tracé)
-    - Rotation sur 3 serveurs Overpass + retry
+Nominatim utilise un index inversé : on donne des coordonnées, il retourne
+le lieu OSM le plus proche. Contrairement à Overpass qui scanne une BBox,
+Nominatim répond en < 1s par requête.
+
+Pour accélérer encore, toutes les requêtes (une par col) sont lancées
+en parallèle via ThreadPoolExecutor.
+
+Politique d'utilisation Nominatim :
+    - Max 1 requête/seconde par IP (géré par semaphore)
+    - User-Agent obligatoire identifiant l'application
+    - Cache 24h : les interactions UI ne redéclenchent jamais de requête réseau
+
+Fonctions publiques :
+    - enrichir_cols(ascensions, points_gpx) → ascensions enrichies avec "Nom" et "Nom OSM alt"
 """
 
 import streamlit as st
@@ -19,29 +24,31 @@ import requests
 import logging
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Semaphore
 
 logger = logging.getLogger(__name__)
 
-OVERPASS_URLS = [
-    "https://overpass-api.de/api/interpreter",
-    "https://lz4.overpass-api.de/api/interpreter",
-    "https://z.overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",  # serveur communautaire stable
-]
-
-RAYON_SOMMET_M  = 800
-TIMEOUT_S       = 25
-MAX_RETRIES     = 4
-RETRY_DELAYS    = [2, 5, 10]  # secondes entre chaque tentative (croissant)
-
-# Priorité des types de nœuds OSM (plus bas = meilleur)
-PRIORITE_TYPE = {
-    "mountain_pass": 0,   # col officiel — meilleure source
-    "saddle":        1,   # selle / col non nommé officiellement
-    "peak":          2,   # sommet
-    "locality":      3,   # lieu-dit montagneux
-    "alpine_hut":    4,   # refuge (souvent au col)
+NOMINATIM_URL     = "https://nominatim.openstreetmap.org/reverse"
+NOMINATIM_HEADERS = {
+    "User-Agent":      "VeloMeteoApp/7.0 (cycliste@example.com) Streamlit",
+    "Accept-Language": "fr,en",
 }
+
+# Types OSM acceptés, par ordre de priorité
+TYPES_ACCEPTES = {
+    "mountain_pass": 0,
+    "saddle":        1,
+    "peak":          2,
+    "locality":      3,
+    "alpine_hut":    4,
+}
+
+# zoom=14 couvre environ 1km autour du point — bon compromis précision/couverture
+ZOOM_NOMINATIM = 14
+
+# Semaphore pour respecter la limite 1 req/s de Nominatim
+_sem = Semaphore(1)
 
 
 def _haversine(lat1, lon1, lat2, lon2) -> float:
@@ -71,148 +78,132 @@ def _point_au_km(points_gpx, km_cible) -> tuple | None:
     return best_pt.latitude, best_pt.longitude
 
 
-def _type_noeud(tags: dict) -> str:
-    """Détermine le type OSM d'un nœud selon ses tags."""
-    if tags.get("mountain_pass") == "yes":
-        return "mountain_pass"
-    nat = tags.get("natural", "")
-    if nat == "saddle":
-        return "saddle"
-    if nat == "peak":
-        return "peak"
-    if tags.get("place") == "locality":
-        return "locality"
-    if tags.get("tourism") == "alpine_hut":
-        return "alpine_hut"
-    return "other"
-
-
 @st.cache_data(ttl=86400, show_spinner=False)
-def _requete_osm_cached(min_lat: float, max_lat: float,
-                        min_lon: float, max_lon: float) -> list:
+def _nominatim_reverse(lat: float, lon: float) -> dict | None:
     """
-    Requête Overpass cachée 24h — retourne la liste brute des nœuds OSM
-    dans la BBox donnée. Séparée de enrichir_cols pour être hashable.
+    Appel Nominatim reverse geocoding mis en cache 24h.
+    Les interactions UI ne redéclenchent jamais cet appel.
     """
-    query = f"""
-[out:json][timeout:{TIMEOUT_S}][bbox:{min_lat:.5f},{min_lon:.5f},{max_lat:.5f},{max_lon:.5f}];
-(
-  node["mountain_pass"="yes"];
-  node["natural"="saddle"];
-  node["natural"="peak"]["name"];
-  node["place"="locality"]["name"];
-  node["tourism"="alpine_hut"]["name"];
-);
-out body;
-"""
-    headers = {
-        "User-Agent":   "VeloMeteoApp/7.0 (cycliste@example.com) Streamlit",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-
-    for tentative in range(MAX_RETRIES):
-        serveur = OVERPASS_URLS[tentative % len(OVERPASS_URLS)]
+    with _sem:
         try:
-            r = requests.post(serveur, data={"data": query},
-                              headers=headers, timeout=TIMEOUT_S)
-            if r.status_code in [429, 503, 504]:
-                raise Exception(f"Serveur surchargé ({r.status_code})")
+            r = requests.get(
+                NOMINATIM_URL,
+                params={
+                    "lat":            lat,
+                    "lon":            lon,
+                    "format":         "jsonv2",
+                    "zoom":           ZOOM_NOMINATIM,
+                    "addressdetails": 0,
+                    "extratags":      1,
+                    "namedetails":    1,
+                },
+                headers=NOMINATIM_HEADERS,
+                timeout=8,
+            )
             r.raise_for_status()
-
-            nodes = []
-            for el in r.json().get("elements", []):
-                tags = el.get("tags", {})
-                nom  = (tags.get("name:fr")
-                        or tags.get("name")
-                        or tags.get("name:en"))
-                if not nom:
-                    continue
-                alt_tag = tags.get("ele")
-                try:    alt = int(float(alt_tag)) if alt_tag else None
-                except: alt = None
-                nodes.append({
-                    "nom":      nom,
-                    "alt":      alt,
-                    "lat":      el["lat"],
-                    "lon":      el["lon"],
-                    "type":     _type_noeud(tags),
-                    "priorite": PRIORITE_TYPE.get(_type_noeud(tags), 99),
-                })
-            return nodes
-
+            time.sleep(1.1)  # respect limite 1 req/s Nominatim
+            return r.json()
         except Exception as e:
-            logger.warning(f"Overpass tentative {tentative+1} ({serveur}) : {e}")
-            if tentative < MAX_RETRIES - 1:
-                delay = RETRY_DELAYS[min(tentative, len(RETRY_DELAYS) - 1)]
-                time.sleep(delay)
+            logger.warning(f"Nominatim ({lat:.4f}, {lon:.4f}) : {e}")
+            return None
 
-    st.toast("⚠️ OSM instable — noms des cols potentiellement manquants.")
-    return []
+
+def _extraire_nom_col(data: dict, alt_gpx: int | None) -> tuple:
+    """
+    Extrait (nom, alt_osm) depuis une réponse Nominatim.
+    Retourne ("—", None) si le résultat n'est pas un col/sommet pertinent.
+    """
+    if not data:
+        return "—", None
+
+    osm_type = data.get("type", "")
+    category = data.get("category", "")
+
+    # Vérifier que c'est un type montagne accepté
+    type_key = osm_type if osm_type in TYPES_ACCEPTES else None
+    if type_key is None:
+        type_key = category if category in TYPES_ACCEPTES else None
+    if type_key is None:
+        return "—", None
+
+    # Nom : priorité français
+    namedetails = data.get("namedetails", {})
+    nom = (namedetails.get("name:fr")
+           or namedetails.get("name")
+           or data.get("display_name", "").split(",")[0].strip()
+           or None)
+    if not nom:
+        return "—", None
+
+    # Altitude OSM depuis extratags
+    alt_osm = None
+    ele = data.get("extratags", {}).get("ele")
+    if ele:
+        try:
+            alt_osm = int(float(ele))
+        except (ValueError, TypeError):
+            pass
+
+    # Filtre cohérence altitude : écarte les homonymes en plaine
+    if alt_gpx and alt_osm and abs(alt_osm - alt_gpx) > 300:
+        return "—", None
+
+    return nom, alt_osm
+
+
+def _requete_col(asc: dict, lat: float, lon: float, alt_gpx: int | None) -> dict:
+    """Lance la requête Nominatim pour un col et retourne le résultat."""
+    data = _nominatim_reverse(round(lat, 5), round(lon, 5))
+    nom, alt_osm = _extraire_nom_col(data, alt_gpx)
+    return {"asc": asc, "nom": nom, "alt_osm": alt_osm}
 
 
 def enrichir_cols(ascensions: list, points_gpx: list) -> list:
     """
-    Enrichit chaque ascension avec le nom OSM du col/sommet.
+    Enrichit chaque ascension avec le nom OSM du col via Nominatim.
 
-    La requête Overpass est mise en cache 24h via _requete_osm_cached —
-    les interactions UI (selectbox, slider) ne déclenchent plus de nouvel appel réseau.
+    Toutes les requêtes sont lancées en parallèle (ThreadPoolExecutor).
+    Le cache 24h sur _nominatim_reverse garantit qu'aucune interaction UI
+    ne redéclenche d'appel réseau.
 
-    Ajoute les clés "Nom" et "Nom OSM alt" à chaque ascension.
+    Ajoute "Nom" et "Nom OSM alt" à chaque ascension.
     """
     if not ascensions or not points_gpx:
         return ascensions
 
-    # Coordonnées GPX des sommets
-    coords_sommets = []
+    # Préparer les jobs
+    jobs = []
     for asc in ascensions:
         coords = _point_au_km(points_gpx, asc["_sommet_km"])
-        if coords:
-            alt_gpx = None
-            try:
-                alt_str = asc.get("Alt. sommet", "").replace(" m", "").strip()
-                alt_gpx = int(alt_str) if alt_str else None
-            except (ValueError, AttributeError):
-                pass
-            coords_sommets.append((asc, coords[0], coords[1], alt_gpx))
-        else:
-            asc["Nom"] = "—"; asc["Nom OSM alt"] = None
-
-    if not coords_sommets:
-        return ascensions
-
-    # BBox englobant tout le parcours + marge
-    lats = [p.latitude  for p in points_gpx]
-    lons = [p.longitude for p in points_gpx]
-    min_lat = min(lats) - 0.05; max_lat = max(lats) + 0.05
-    min_lon = min(lons) - 0.05; max_lon = max(lons) + 0.05
-
-    # Requête cachée — ne sera pas rejouée lors des interactions UI
-    osm_nodes = _requete_osm_cached(
-        round(min_lat, 5), round(max_lat, 5),
-        round(min_lon, 5), round(max_lon, 5)
-    )
-
-    # Association locale pour chaque sommet
-    for asc, lat, lon, alt_gpx in coords_sommets:
-        candidats = []
-        for nd in osm_nodes:
-            dist = _haversine(lat, lon, nd["lat"], nd["lon"])
-            if dist <= RAYON_SOMMET_M:
-                # Pénalité altitude : si l'alt OSM est disponible et diffère
-                # de plus de 200m de l'alt GPX, on écarte le candidat
-                if alt_gpx and nd["alt"]:
-                    if abs(nd["alt"] - alt_gpx) > 200:
-                        continue
-                candidats.append({**nd, "dist": dist})
-
-        if not candidats:
+        if not coords:
             asc["Nom"] = "—"; asc["Nom OSM alt"] = None
             continue
+        lat, lon = coords
+        alt_gpx  = None
+        try:
+            alt_str = asc.get("Alt. sommet", "").replace(" m", "").strip()
+            alt_gpx = int(alt_str) if alt_str else None
+        except (ValueError, AttributeError):
+            pass
+        jobs.append((asc, lat, lon, alt_gpx))
 
-        # Tri : priorité type d'abord, distance ensuite
-        candidats.sort(key=lambda c: (c["priorite"], c["dist"]))
-        meilleur = candidats[0]
-        asc["Nom"]         = meilleur["nom"]
-        asc["Nom OSM alt"] = meilleur["alt"]
+    if not jobs:
+        return ascensions
+
+    # Requêtes parallèles — le semaphore garantit max 1 req/s malgré les threads
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(_requete_col, asc, lat, lon, alt_gpx): asc
+            for asc, lat, lon, alt_gpx in jobs
+        }
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                result["asc"]["Nom"]         = result["nom"]
+                result["asc"]["Nom OSM alt"] = result["alt_osm"]
+            except Exception as e:
+                asc = futures[future]
+                logger.warning(f"Erreur col km {asc.get('_sommet_km')} : {e}")
+                asc["Nom"] = "—"; asc["Nom OSM alt"] = None
 
     return ascensions
