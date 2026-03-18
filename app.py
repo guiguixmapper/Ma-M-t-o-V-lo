@@ -365,15 +365,25 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
                   zoom_start=11, tiles=tiles, scrollWheelZoom=True)
     if attr: kwargs["attr"] = attr
     carte = folium.Map(**kwargs)
+    
+    # 1. On crée nos "calques" (FeatureGroups)
+    fg_trace = folium.FeatureGroup(name="📍 Parcours", show=True)
+    fg_cols  = folium.FeatureGroup(name="🏔️ Ascensions", show=True)
+    fg_meteo = folium.FeatureGroup(name="🌤️ Météo", show=False) # Caché par défaut pour ne pas surcharger !
+
+    # 2. On ajoute la ligne bleue et les drapeaux au calque "Parcours"
     folium.PolyLine([[p.latitude, p.longitude] for p in points_gpx],
-                    color="#2563eb", weight=5, opacity=0.9).add_to(carte)
+                    color="#2563eb", weight=5, opacity=0.9).add_to(fg_trace)
     folium.Marker([points_gpx[0].latitude, points_gpx[0].longitude], tooltip="🚦 Départ",
-                  icon=folium.Icon(color="green", icon="play", prefix="fa")).add_to(carte)
+                  icon=folium.Icon(color="green", icon="play", prefix="fa")).add_to(fg_trace)
     folium.Marker([points_gpx[-1].latitude, points_gpx[-1].longitude], tooltip="🏁 Arrivée",
-                  icon=folium.Icon(color="red", icon="flag", prefix="fa")).add_to(carte)
+                  icon=folium.Icon(color="red", icon="flag", prefix="fa")).add_to(fg_trace)
+    
     COULEUR_COL = {"🔴 HC":"red","🟠 1ère Cat.":"orange",
                    "🟡 2ème Cat.":"beige","🟢 3ème Cat.":"green","🔵 4ème Cat.":"blue"}
     cps = list(resultats)
+    
+    # 3. On ajoute les cols au calque "Ascensions"
     for asc in ascensions:
         best = min(cps, key=lambda cp: abs(cp["Km"] - asc["_sommet_km"]), default=None)
         if best is None: continue
@@ -395,7 +405,9 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
         folium.Marker([best["lat"], best["lon"]],
             popup=folium.Popup(popup_col, max_width=260),
             tooltip=folium.Tooltip(f'▲ {nom if nom != "—" else asc["Catégorie"]} — {asc["Alt. sommet"]}', sticky=True),
-            icon=folium.Icon(color=coul, icon="chevron-up", prefix="fa")).add_to(carte)
+            icon=folium.Icon(color=coul, icon="chevron-up", prefix="fa")).add_to(fg_cols)
+            
+    # 4. On ajoute les points de contrôle au calque "Météo"
     for cp in resultats:
         t = cp.get("temp_val")
         if t is None: continue
@@ -435,7 +447,16 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
                 f'<svg width="12" height="12" viewBox="0 0 28 28" style="vertical-align:middle">'
                 f'<g transform="rotate({rot},14,14)"><polygon points="14,2 20,22 14,18 8,22" fill="{fc}"/></g></svg>'
                 f" {vv} km/h", sticky=True),
-            icon=folium.Icon(color="blue", icon="info-sign")).add_to(carte)
+            icon=folium.Icon(color="blue", icon="info-sign")).add_to(fg_meteo)
+
+    # 5. On ajoute les calques à la carte
+    fg_trace.add_to(carte)
+    fg_cols.add_to(carte)
+    fg_meteo.add_to(carte)
+
+    # 6. LE BOUTON MAGIQUE : Le contrôleur de calques
+    folium.LayerControl(collapsed=False, position="topright").add_to(carte)
+
     return carte
 
 
