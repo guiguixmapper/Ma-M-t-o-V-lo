@@ -48,8 +48,8 @@ def direction_vent_relative(cap: float, dir_vent: float) -> str:
     diff = (dir_vent - cap) % 360
     if diff <= 45 or diff >= 315:  return "⬇️ Face"
     elif 135 <= diff <= 225:       return "⬆️ Dos"
-    elif 45 < diff < 135:          return "↘️ Côté (D)"
-    else:                          return "↙️ Côté (G)"
+    elif 45 < diff < 135:          return "↙️ Côté (D)"   # vent de droite → pousse à gauche
+    else:                          return "↘️ Côté (G)"   # vent de gauche → pousse à droite
 
 
 def wind_chill(temp_c: float, vent_kmh: float) -> int | None:
