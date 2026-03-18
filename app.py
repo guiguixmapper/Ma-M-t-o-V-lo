@@ -259,7 +259,7 @@ def generer_resume_gemini(gemini_key, score_total, score_label,
         f"Pas de liste, pas de titre, juste un paragraphe fluide."
     )
     url  = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-2.0-flash:generateContent?key={gemini_key}")
+            f"gemini-2.5-flash-preview-04-17:generateContent?key={gemini_key}")
     body = {"contents": [{"parts": [{"text": prompt}]}]}
     for tentative in range(2):
         try:
