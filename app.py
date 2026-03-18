@@ -1,9 +1,8 @@
 """
-🚴‍♂️ Vélo & Météo — v6
-Nouveautés v6 :
-    - Correction altimétrique exclusivement via OpenRouteService (précis et lissé)
-    - Noms des cols via OpenStreetMap / Overpass (Méthode Sniper + Retry)
-    - Temps de parcours via OpenRouteService (clé API requise)
+🚴‍♂️ Vélo & Météo — v7
+Nouveautés v7 :
+    - Suppression ORS (routing inutile sans adaptation vitesse, elevation faux)
+    - Noms des cols via OpenStreetMap / Overpass (couverture élargie)
     - Calques sur la carte pour alléger l'affichage
 """
 
@@ -66,9 +65,7 @@ from weather import (
     extraire_meteo, direction_vent_relative, wind_chill,
     label_wind_chill, obtenir_icone_meteo,
 )
-from elevation import corriger_profil
-from overpass   import enrichir_cols
-from routing    import estimer_temps_ors, preparer_coords_ors
+from overpass import enrichir_cols
 
 
 # ==============================================================================
@@ -518,12 +515,8 @@ def main():
     # ── OPTIONS AVANCÉES ──────────────────────────────────────────────────────
     st.sidebar.divider()
     with st.sidebar.expander("🔧 Options avancées", expanded=False):
-        corriger_alt = st.toggle("📡 Corriger l'altimétrie (ORS)", value=False,
-            help="Remplace les altitudes GPS par le modèle lissé d'OpenRouteService. Nécessite la clé API ci-dessous.")
         noms_osm = st.toggle("🗺️ Nommer les cols (OpenStreetMap)", value=True,
             help="Recherche le nom officiel de chaque col sur OpenStreetMap.")
-        ors_key  = st.text_input("🛣️ Clé API OpenRouteService", value="", type="password",
-            help="Optionnel. Améliore l'estimation de durée et permet la correction altimétrique ORS.")
 
     ph_fuseau = st.sidebar.empty()
     ph_fuseau.info("🌍 Fuseau : en attente…")
@@ -551,22 +544,6 @@ def main():
             infos_soleil = recuperer_soleil(
                 points_gpx[0].latitude, points_gpx[0].longitude,
                 date_dep.strftime("%Y-%m-%d"))
-
-    # ── CORRECTION ALTIMÉTRIQUE ───────────────────────────────────────────────
-    if corriger_alt:
-        if not ors_key:
-            st.sidebar.error("⚠️ Clé API requise pour utiliser la correction ORS.")
-        else:
-            with etapes.container():
-                with st.spinner("📡 Correction altimétrique (ORS)…"):
-                    lats_t = tuple(p.latitude  for p in points_gpx)
-                    lons_t = tuple(p.longitude for p in points_gpx)
-                    alts_t = tuple(p.elevation or 0 for p in points_gpx)
-                    
-                    alts_corrigees = corriger_profil(lats_t, lons_t, alts_t, ors_key)
-                    
-                    for i, p in enumerate(points_gpx):
-                        p.elevation = alts_corrigees[i]
 
     # ── CALCULS PARCOURS ─────────────────────────────────────────────────────
     with etapes.container():
@@ -606,20 +583,6 @@ def main():
         "Alt (m)": int(pf.elevation) if pf.elevation else 0,
     })
     df_profil = pd.DataFrame(profil_data)
-
-    # ── ORS ───────────────────────────────────────────────────────────────────
-    duree_ors = None
-    if ors_key:
-        with etapes.container():
-            with st.spinner("🛣️ Calcul de la durée via OpenRouteService…"):
-                coords_ors = preparer_coords_ors(points_gpx)
-                ors_result = estimer_temps_ors(coords_ors, ors_key)
-                if ors_result["source"] == "ORS":
-                    duree_ors = ors_result["duree_s"]
-                    heure_arr = date_depart + timedelta(seconds=duree_ors)
-                    temps_s   = duree_ors
-                else:
-                    st.warning("⚠️ ORS indisponible — durée estimée par calcul interne.")
 
     # ── ASCENSIONS ────────────────────────────────────────────────────────────
     with etapes.container():
@@ -671,9 +634,6 @@ def main():
         asc["Temps col"]      = f"{mins_col} min ({vit_col} km/h)"
         asc["Arrivée sommet"] = heure_sommet.strftime("%H:%M")
 
-    badge_ors = (' <span style="font-size:.7rem;background:rgba(255,255,255,.2);'
-                 'border-radius:10px;padding:2px 8px">🛣️ ORS</span>') if duree_ors else ''
-
     st.markdown(f"""
     <div style="background:linear-gradient(135deg,#1e3a5f,#1e40af);border-radius:12px;
                 padding:16px 24px;color:white;margin:12px 0;
@@ -704,7 +664,7 @@ def main():
           <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">⬇️ Dénivelé −</div>
         </div>
         <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-right:1px solid rgba(255,255,255,0.2)">
-          <div style="font-size:1.9rem;font-weight:800">{dh}h{dm:02d}{badge_ors}</div>
+          <div style="font-size:1.9rem;font-weight:800">{dh}h{dm:02d}</div>
           <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">min</div>
           <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">⏱️ Durée</div>
         </div>
@@ -774,8 +734,6 @@ def main():
                 f'⬇️ Télécharger {nom_f}</a>', unsafe_allow_html=True)
 
     with tab_profil:
-        if corriger_alt and ors_key:
-            st.caption("✅ Altimétrie corrigée via ORS.")
         lbl_mode = "FTP" if mode == "⚡ Puissance" else "FC max"
         st.caption(f"Segments colorés selon les zones {lbl_mode}.")
         idx_survol = None
