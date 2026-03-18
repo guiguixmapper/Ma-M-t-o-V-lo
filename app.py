@@ -1,9 +1,10 @@
 """
 🚴‍♂️ Vélo & Météo — v6
 Nouveautés v6 :
-    - Correction altimétrique via Open-Elevation (SRTM)
-    - Noms des cols via OpenStreetMap / Overpass
+    - Correction altimétrique via OpenRouteService ou Open-Elevation (SRTM)
+    - Noms des cols via OpenStreetMap / Overpass (Méthode Sniper)
     - Temps de parcours via OpenRouteService (clé API requise)
+    - Calques sur la carte pour alléger l'affichage
 """
 
 import streamlit as st
@@ -369,8 +370,8 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
     # 1. On crée nos "calques" (FeatureGroups)
     fg_trace = folium.FeatureGroup(name="📍 Parcours", show=True)
     fg_cols  = folium.FeatureGroup(name="🏔️ Ascensions", show=True)
-    fg_meteo = folium.FeatureGroup(name="🌤️ Météo", show=False) # Caché par défaut pour ne pas surcharger !
-
+    fg_meteo = folium.FeatureGroup(name="🌤️ Météo", show=False) # Caché par défaut
+    
     # 2. On ajoute la ligne bleue et les drapeaux au calque "Parcours"
     folium.PolyLine([[p.latitude, p.longitude] for p in points_gpx],
                     color="#2563eb", weight=5, opacity=0.9).add_to(fg_trace)
@@ -454,7 +455,7 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
     fg_cols.add_to(carte)
     fg_meteo.add_to(carte)
 
-    # 6. LE BOUTON MAGIQUE : Le contrôleur de calques
+    # 6. Contrôleur de calques
     folium.LayerControl(collapsed=False, position="topright").add_to(carte)
 
     return carte
@@ -517,13 +518,14 @@ def main():
     # ── OPTIONS AVANCÉES ──────────────────────────────────────────────────────
     st.sidebar.divider()
     with st.sidebar.expander("🔧 Options avancées", expanded=False):
-        corriger_alt = st.toggle("📡 Corriger l'altimétrie (SRTM)", value=False,
-            help="Remplace les altitudes GPS par des données SRTM via Open-Elevation. "
-                 "Plus fiable sur les GPX approximatifs. Ralentit le chargement (~5s).")
+        source_alt = st.selectbox("📡 Correction altimétrique", 
+            options=["Désactivée", "SRTM (Open-Elevation)", "ORS (OpenRouteService)"], 
+            index=0,
+            help="SRTM est public mais un peu lent. ORS est très rapide et précis, mais nécessite votre clé API ci-dessous.")
         noms_osm = st.toggle("🗺️ Nommer les cols (OpenStreetMap)", value=True,
             help="Recherche le nom officiel de chaque col sur OpenStreetMap.")
         ors_key  = st.text_input("🛣️ Clé API OpenRouteService", value="", type="password",
-            help="Optionnel. Améliore l'estimation de durée. Gratuit sur openrouteservice.org.")
+            help="Optionnel. Améliore l'estimation de durée et permet la correction altimétrique ORS.")
 
     ph_fuseau = st.sidebar.empty()
     ph_fuseau.info("🌍 Fuseau : en attente…")
@@ -553,15 +555,22 @@ def main():
                 date_dep.strftime("%Y-%m-%d"))
 
     # ── CORRECTION ALTIMÉTRIQUE ───────────────────────────────────────────────
-    if corriger_alt:
-        with etapes.container():
-            with st.spinner("📡 Correction altimétrique SRTM…"):
-                lats_t = tuple(p.latitude  for p in points_gpx)
-                lons_t = tuple(p.longitude for p in points_gpx)
-                alts_t = tuple(p.elevation or 0 for p in points_gpx)
-                alts_corrigees = corriger_profil(lats_t, lons_t, alts_t)
-                for i, p in enumerate(points_gpx):
-                    p.elevation = alts_corrigees[i]
+    if source_alt != "Désactivée":
+        methode_alt = "ors" if "ORS" in source_alt else "srtm"
+        
+        if methode_alt == "ors" and not ors_key:
+            st.sidebar.error("⚠️ Clé API requise pour utiliser la correction ORS.")
+        else:
+            with etapes.container():
+                with st.spinner(f"📡 Correction altimétrique ({methode_alt.upper()})…"):
+                    lats_t = tuple(p.latitude  for p in points_gpx)
+                    lons_t = tuple(p.longitude for p in points_gpx)
+                    alts_t = tuple(p.elevation or 0 for p in points_gpx)
+                    
+                    alts_corrigees = corriger_profil(lats_t, lons_t, alts_t, ors_key, methode_alt)
+                    
+                    for i, p in enumerate(points_gpx):
+                        p.elevation = alts_corrigees[i]
 
     # ── CALCULS PARCOURS ─────────────────────────────────────────────────────
     with etapes.container():
@@ -769,8 +778,8 @@ def main():
                 f'⬇️ Télécharger {nom_f}</a>', unsafe_allow_html=True)
 
     with tab_profil:
-        if corriger_alt:
-            st.caption("✅ Altimétrie corrigée via SRTM (Open-Elevation).")
+        if source_alt != "Désactivée":
+            st.caption(f"✅ Altimétrie corrigée via {source_alt}.")
         lbl_mode = "FTP" if mode == "⚡ Puissance" else "FC max"
         st.caption(f"Segments colorés selon les zones {lbl_mode}.")
         idx_survol = None
