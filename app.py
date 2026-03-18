@@ -527,8 +527,14 @@ def main():
     # ── OPTIONS AVANCÉES ──────────────────────────────────────────────────────
     st.sidebar.divider()
     with st.sidebar.expander("🔧 Options avancées", expanded=False):
-        noms_osm = st.toggle("🗺️ Nommer les cols (OpenStreetMap)", value=True,
-            help="Recherche le nom officiel de chaque col sur OpenStreetMap.")
+        noms_osm = st.toggle("🗺️ Nommer les cols (OpenStreetMap)", value=False,
+            help="Recherche le nom officiel de chaque col sur OpenStreetMap. "
+                 "Peut être lent ou indisponible selon l'hébergement.")
+        if noms_osm:
+            st.sidebar.warning(
+                "⚠️ Les serveurs Overpass sont souvent surchargés ou bloqués "
+                "sur Streamlit Cloud. La recherche peut échouer ou être lente."
+            )
 
     ph_fuseau = st.sidebar.empty()
     ph_fuseau.info("🌍 Fuseau : en attente…")
