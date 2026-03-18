@@ -538,8 +538,8 @@ def main():
 
         # Bouton reset
         if st.button("↺ Réinitialiser", use_container_width=True):
-            st.session_state.sensibilite = 3
-            st.session_state.seuil_debut, st.session_state.seuil_fin, st.session_state.fusion_m = SENSIBILITE_PARAMS[3]
+            for k in ["sensibilite", "seuil_debut", "seuil_fin", "fusion_m", "_last_sensibilite"]:
+                st.session_state.pop(k, None)
             st.rerun()
 
         # ── Réglages fins ─────────────────────────────────────────────────────
