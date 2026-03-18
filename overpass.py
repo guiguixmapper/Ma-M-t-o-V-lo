@@ -35,12 +35,11 @@ MAX_RETRIES     = 4
 RETRY_DELAYS    = [2, 5, 10]  # secondes entre chaque tentative (croissant)
 
 # Priorité des types de nœuds OSM (plus bas = meilleur)
-PRIORITE_TYPE = {
-    "mountain_pass": 0,   # col officiel — meilleure source
-    "saddle":        1,   # selle / col non nommé officiellement
-    "peak":          2,   # sommet
-    "locality":      3,   # lieu-dit montagneux
-    "alpine_hut":    4,   # refuge (souvent au col)
+TYPES_ACCEPTES = {
+    "mountain_pass": 0,
+    "saddle":        1,
+    "peak":          2,
+    "volcano":       3,
 }
 
 
@@ -76,14 +75,9 @@ def _type_noeud(tags: dict) -> str:
     if tags.get("mountain_pass") == "yes":
         return "mountain_pass"
     nat = tags.get("natural", "")
-    if nat == "saddle":
-        return "saddle"
-    if nat == "peak":
-        return "peak"
-    if tags.get("place") == "locality":
-        return "locality"
-    if tags.get("tourism") == "alpine_hut":
-        return "alpine_hut"
+    if nat == "saddle":   return "saddle"
+    if nat == "peak":     return "peak"
+    if nat == "volcano":  return "volcano"
     return "other"
 
 
@@ -98,10 +92,9 @@ def _requete_osm_cached(min_lat: float, max_lat: float,
 [out:json][timeout:{TIMEOUT_S}][bbox:{min_lat:.5f},{min_lon:.5f},{max_lat:.5f},{max_lon:.5f}];
 (
   node["mountain_pass"="yes"];
-  node["natural"="saddle"];
+  node["natural"="saddle"]["name"];
   node["natural"="peak"]["name"];
-  node["place"="locality"]["name"];
-  node["tourism"="alpine_hut"]["name"];
+  node["natural"="volcano"]["name"];
 );
 out body;
 """
@@ -136,7 +129,7 @@ out body;
                     "lat":      el["lat"],
                     "lon":      el["lon"],
                     "type":     _type_noeud(tags),
-                    "priorite": PRIORITE_TYPE.get(_type_noeud(tags), 99),
+                    "priorite": TYPES_ACCEPTES.get(_type_noeud(tags), 99),
                 })
             return nodes
 
