@@ -23,10 +23,10 @@ import time
 logger = logging.getLogger(__name__)
 
 OVERPASS_URLS = [
-    "https://overpass.kumi.systems/api/interpreter",     # communautaire EU, très stable
-    "https://overpass.openstreetmap.fr/api/interpreter", # OSM France, fiable
-    "https://overpass.osm.ch/api/interpreter",           # Geofabrik Suisse
-    "https://overpass-api.de/api/interpreter",           # officiel, souvent surchargé
+    "https://overpass-api.de/api/interpreter",
+    "https://lz4.overpass-api.de/api/interpreter",
+    "https://z.overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
 ]
 
 RAYON_SOMMET_M  = 800
