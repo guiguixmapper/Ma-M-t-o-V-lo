@@ -144,7 +144,7 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
 <h1>🚴‍♂️ Résumé de sortie vélo</h1>
 <p>Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')} · Départ : {heure_depart.strftime('%d/%m/%Y %H:%M')}</p>
 <div class="score">{score['label']} — {score['total']}/10 &nbsp;|&nbsp;
-  🌤️ {score['score_meteo']}/6 &nbsp;|&nbsp; 🏔️ {score['score_cols']}/4 &nbsp;|&nbsp; ⚡ {score['score_effort']}/2</div>
+  🌤️ {score['score_meteo']}/6 &nbsp;|&nbsp; 🏔️ {score['score_cols']}/4</div>
 <div class="grid">
   <div class="card"><div class="v">{round(dist_tot/1000,1)} km</div><div class="l">📏 Distance</div></div>
   <div class="card"><div class="v">{int(d_plus)} m</div><div class="l">⬆️ D+</div></div>
@@ -878,7 +878,6 @@ def main():
         <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
           <span style="background:rgba(255,255,255,.2);border-radius:20px;padding:3px 10px;font-size:.75rem">🌤️ {score['score_meteo']}/6</span>
           <span style="background:rgba(255,255,255,.2);border-radius:20px;padding:3px 10px;font-size:.75rem">🏔️ {score['score_cols']}/4</span>
-          <span style="background:rgba(255,255,255,.2);border-radius:20px;padding:3px 10px;font-size:.75rem">⚡ {score['score_effort']}/2</span>
         </div>
       </div>
       <div style="display:flex;gap:0;flex:1;flex-wrap:wrap;padding-left:8px">
