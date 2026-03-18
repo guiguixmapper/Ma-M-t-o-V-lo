@@ -1,9 +1,9 @@
 """
 overpass.py
 ===========
-Détection des cols optimisée via une requête ciblée ("Sniper").
-Inclut une rotation de serveurs miroirs (Load Balancing) et un backoff exponentiel
-pour esquiver les erreurs 504 (Timeout) et 429 (Too Many Requests).
+Détection des cols avec la technique de "l'entonnoir" (BBox + Sniper).
+Ultra-rapide : filtre d'abord la zone, puis applique la recherche radiale
+uniquement sur le sous-ensemble de résultats.
 """
 
 import streamlit as st
@@ -14,21 +14,19 @@ import time
 
 logger = logging.getLogger(__name__)
 
-# NOUVEAU : Liste des serveurs officiels et miroirs
 OVERPASS_URLS = [
-    "https://overpass-api.de/api/interpreter",        # Serveur principal
-    "https://lz4.overpass-api.de/api/interpreter",    # Serveur miroir 1
-    "https://z.overpass-api.de/api/interpreter",      # Serveur miroir 2
-    "https://overpass.kumi.systems/api/interpreter"   # Serveur miroir alternatif
+    "https://overpass-api.de/api/interpreter",
+    "https://lz4.overpass-api.de/api/interpreter",
+    "https://z.overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter"
 ]
 
 RAYON_SOMMET_M  = 500    
 TIMEOUT_S       = 25     
-MAX_RETRIES     = 4      # On a 4 serveurs, on tente 4 fois maximum
+MAX_RETRIES     = 4      
 
 
 def _haversine(lat1, lon1, lat2, lon2) -> float:
-    """Distance en mètres entre deux points GPS."""
     R    = 6371000
     φ1, φ2 = math.radians(lat1), math.radians(lat2)
     dφ   = math.radians(lat2 - lat1)
@@ -58,6 +56,7 @@ def enrichir_cols(ascensions: list, points_gpx: list) -> list:
     if not ascensions or not points_gpx:
         return ascensions
 
+    # 1. On récupère les coordonnées exactes de nos sommets GPX
     coords_sommets = []
     for asc in ascensions:
         coords = _point_au_km(points_gpx, asc["_sommet_km"])
@@ -70,18 +69,29 @@ def enrichir_cols(ascensions: list, points_gpx: list) -> list:
     if not coords_sommets:
         return ascensions
 
-    query_parts = []
-    for _, lat, lon in coords_sommets:
-        query_parts.append(f'node["mountain_pass"="yes"](around:{RAYON_SOMMET_M},{lat:.5f},{lon:.5f});')
-        query_parts.append(f'node["natural"="saddle"](around:{RAYON_SOMMET_M},{lat:.5f},{lon:.5f});')
-        query_parts.append(f'node["natural"="peak"]["name"](around:{RAYON_SOMMET_M},{lat:.5f},{lon:.5f});')
+    # 2. Calcul de la Bounding Box pour limiter la recherche initiale
+    lats = [p.latitude for p in points_gpx]
+    lons = [p.longitude for p in points_gpx]
+    min_lat, max_lat = min(lats) - 0.05, max(lats) + 0.05
+    min_lon, max_lon = min(lons) - 0.05, max(lons) + 0.05
 
-    query_body = "\n".join(query_parts)
-    
+    # 3. On prépare les filtres circulaires (le Sniper)
+    around_filters = ""
+    for _, lat, lon in coords_sommets:
+        around_filters += f"  node.allpois(around:{RAYON_SOMMET_M},{lat:.5f},{lon:.5f});\n"
+
+    # 4. La requête "Entonnoir"
     query = f"""
-    [out:json][timeout:{TIMEOUT_S}];
+    [out:json][timeout:{TIMEOUT_S}][bbox:{min_lat:.5f},{min_lon:.5f},{max_lat:.5f},{max_lon:.5f}];
+    // ÉTAPE 1 : Trouver tous les cols/pics nommés de la région et les stocker dans .allpois
     (
-{query_body}
+      node["mountain_pass"="yes"];
+      node["natural"="saddle"];
+      node["natural"="peak"]["name"];
+    )->.allpois;
+    // ÉTAPE 2 : Ne garder que ceux qui sont à 500m de nos sommets GPX
+    (
+{around_filters}
     );
     out body;
     """
@@ -89,14 +99,12 @@ def enrichir_cols(ascensions: list, points_gpx: list) -> list:
     osm_nodes = []
     succes_api = False
     
-    # NOUVEAU : La boucle magique de rotation des serveurs
+    # Exécution avec Load Balancing (rotation des serveurs)
     for tentative in range(MAX_RETRIES):
         serveur_actuel = OVERPASS_URLS[tentative % len(OVERPASS_URLS)]
-        
         try:
             r = requests.post(serveur_actuel, data={"data": query}, timeout=TIMEOUT_S + 5)
             
-            # On attrape spécifiquement les erreurs de surcharge
             if r.status_code in [429, 504, 503]:
                 raise Exception(f"Serveur surchargé (Code {r.status_code})")
                 
@@ -120,18 +128,18 @@ def enrichir_cols(ascensions: list, points_gpx: list) -> list:
                 })
             
             succes_api = True
-            break  # Victoire ! On sort de la boucle.
+            break  
             
         except Exception as e:
             logger.warning(f"Tentative {tentative + 1} échouée sur {serveur_actuel} : {e}")
             if tentative < MAX_RETRIES - 1:
-                # On attend de plus en plus longtemps pour se faire pardonner (3s, puis 6s, puis 9s)
-                attente = (tentative + 1) * 3
+                attente = (tentative + 1) * 2
                 time.sleep(attente)
 
     if not succes_api:
-        st.toast("⚠️ Tous les serveurs OpenStreetMap sont saturés actuellement. Les noms des cols seront absents.")
+        st.toast("⚠️ OSM instable : noms des cols potentiellement manquants.")
 
+    # 5. Association du résultat à notre liste d'ascensions
     for asc, lat, lon in coords_sommets:
         meilleur_noeud = None
         meilleure_dist = RAYON_SOMMET_M
