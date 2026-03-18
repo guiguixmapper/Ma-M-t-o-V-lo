@@ -12,8 +12,8 @@ import math
 logger = logging.getLogger(__name__)
 
 OVERPASS_URL    = "https://overpass-api.de/api/interpreter"
-RAYON_SOMMET_M  = 500    # m — rayon de recherche local
-TIMEOUT_S       = 25     # Légèrement augmenté pour une grande zone
+RAYON_SOMMET_M  = 500    # m — rayon de recherche local autour du point GPS
+TIMEOUT_S       = 25     
 
 
 def _haversine(lat1, lon1, lat2, lon2) -> float:
@@ -47,14 +47,15 @@ def _point_au_km(points_gpx, km_cible) -> tuple | None:
 def _requete_cols_bbox(min_lat: float, min_lon: float, max_lat: float, max_lon: float) -> list:
     """
     Interroge Overpass en UNE SEULE FOIS pour tout le rectangle du parcours.
-    (south, west, north, east)
+    On utilise le formatage :.5f pour éviter les bugs.
+    NOUVEAU : On inclut les 'peak', mais UNIQUEMENT s'ils ont un nom ["name"].
     """
     query = f"""
-    [out:json][timeout:{TIMEOUT_S}];
+    [out:json][timeout:{TIMEOUT_S}][bbox:{min_lat:.5f},{min_lon:.5f},{max_lat:.5f},{max_lon:.5f}];
     (
-      node["mountain_pass"="yes"]({min_lat},{min_lon},{max_lat},{max_lon});
-      node["natural"="saddle"]({min_lat},{min_lon},{max_lat},{max_lon});
-      node["natural"="peak"]({min_lat},{min_lon},{max_lat},{max_lon});
+      node["mountain_pass"="yes"];
+      node["natural"="saddle"];
+      node["natural"="peak"]["name"];
     );
     out body;
     """
@@ -91,8 +92,11 @@ def enrichir_cols(ascensions: list, points_gpx: list) -> list:
     min_lat, max_lat = min(lats) - 0.01, max(lats) + 0.01
     min_lon, max_lon = min(lons) - 0.01, max(lons) + 0.01
 
-    # 2. Récupération de TOUS les cols de la région d'un coup
+    # 2. Récupération des cols et sommets nommés
     osm_nodes = _requete_cols_bbox(min_lat, min_lon, max_lat, max_lon)
+
+    if not osm_nodes:
+        st.toast("⚠️ Impossible de récupérer les noms des cols. Serveur OSM surchargé ou zone vide.")
 
     # 3. Association locale
     for asc in ascensions:
@@ -106,7 +110,7 @@ def enrichir_cols(ascensions: list, points_gpx: list) -> list:
         meilleure_dist = RAYON_SOMMET_M
 
         for noeud in osm_nodes:
-            if not noeud["nom"]: # On ignore les bosses sans nom
+            if not noeud["nom"]: 
                 continue
             dist = _haversine(lat, lon, noeud["lat"], noeud["lon"])
             if dist < meilleure_dist:
