@@ -1,24 +1,8 @@
 """
-🚴‍♂️ Vélo & Météo — v7
-================
+🚴‍♂️ Vélo & Météo — v8 (Avec IA)
+================================
 Analyse de tracé GPX : météo en temps réel, cols UCI, profil interactif,
-zones d'entraînement et score de conditions.
-
-Nouveautés v7 :
-    - Algorithme de détection slope-first avec slider de sensibilité 1→5
-    - Score refait : Météo (6pts) + Parcours (4pts) — conditions-first
-    - Marqueurs de cols positionnés sur les coordonnées GPS exactes
-    - Légende carte stylée, calques réordonnés (Météo en premier)
-    - Suppression ORS routing et correction altimétrique (D+ natif fiable)
-    - Fix flèches vent de côté
-    - Fix Arrow serialization (colonnes vent/rafales)
-    - width='stretch' (dépréciation use_container_width)
-
-Stack :
-    - Météo    : Open-Meteo (gratuit, sans clé)
-    - Cols OSM : Overpass API (cache 24h, 4 serveurs en rotation)
-    - Carte    : Folium + Leaflet
-    - Profil   : Plotly
+zones d'entraînement, score de conditions et Coach IA.
 """
 
 import streamlit as st
@@ -81,6 +65,7 @@ from weather import (
     label_wind_chill, obtenir_icone_meteo,
 )
 from overpass import enrichir_cols
+from gemini_coach import generer_briefing
 
 
 # ==============================================================================
@@ -166,7 +151,7 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
 
 
 # ==============================================================================
-# SCORE GLOBAL
+# SCORE GLOBAL ET ANALYSE
 # ==============================================================================
 
 def analyser_meteo_detaillee(resultats, dist_tot):
@@ -230,70 +215,9 @@ def analyser_meteo_detaillee(resultats, dist_tot):
         "n_valides":       total_v,
     }
 
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def generer_resume_gemini(gemini_key, score_total, score_label,
-                          dist_tot, d_plus, temps_s, vitesse,
-                          temp_moy, pluie_moy, cols_str, analyse_str):
-    """
-    Génère un résumé textuel de la sortie via Gemini 2.0 Flash.
-    Mis en cache 24h — ne se relance jamais lors des interactions UI.
-    Retry automatique si quota dépassé (429).
-    """
-    if not gemini_key:
-        return None
-    import time
-    dh = int(temps_s // 3600); dm = int((temps_s % 3600) // 60)
-    prompt = (
-        f"Tu es un coach cycliste. Génère un résumé concis et encourageant en français "
-        f"de cette sortie vélo (3-4 phrases max, ton naturel et sportif) :\n"
-        f"- Distance : {round(dist_tot/1000, 1)} km\n"
-        f"- Dénivelé positif : {int(d_plus)} m\n"
-        f"- Durée estimée : {dh}h{dm:02d}\n"
-        f"- Vitesse moyenne : {vitesse} km/h\n"
-        f"- Score conditions : {score_total}/10 ({score_label})\n"
-        f"- Température moyenne : {temp_moy}°C\n"
-        f"- Risque de pluie moyen : {pluie_moy}%\n"
-        f"- Ascensions : {cols_str}\n"
-        f"- Vent : {analyse_str}\n"
-        f"Pas de liste, pas de titre, juste un paragraphe fluide."
-    )
-    url  = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-2.5-flash-preview:generateContent?key={gemini_key}")
-    body = {"contents": [{"parts": [{"text": prompt}]}]}
-    for tentative in range(2):
-        try:
-            r = requests.post(url, json=body, timeout=15)
-            if r.status_code == 429:
-                if tentative == 0:
-                    time.sleep(10)   # quota dépassé → attendre 10s et réessayer
-                    continue
-                else:
-                    logger.warning("Gemini : quota dépassé (429) — réessayez dans quelques secondes.")
-                    return None
-            r.raise_for_status()
-            return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        except Exception as e:
-            logger.warning(f"Gemini : {e}")
-            return None
-    return None
-
-
 def calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids):
     """
     Score /10 = Météo (6pts) + Parcours (4pts)
-
-    Météo (6pts) — cœur du score, conditions extérieures :
-        - Température (2pts)
-        - Vent effectif (2pts)
-        - Pluie (2pts)
-
-    Parcours (4pts) — informatif, jamais punitif (plancher à 2/4) :
-        - Distance + Dénivelé (2pts) : toujours ≥ 0.5
-        - Effort estimé (2pts) : basé sur FTP/FC max
-
-    Principe : seule la météo peut vraiment plomber le score.
-    Un parcours difficile par beau temps reste une belle sortie.
     """
     valides = [cp for cp in resultats if cp.get("temp_val") is not None]
 
@@ -309,10 +233,10 @@ def calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids)
 
         # Vent effectif (2pts) — pondéré par direction
         POIDS_EFFET = {
-            "⬇️ Face":   1.5,   # vent de face = plein malus
+            "⬇️ Face":   1.5,
             "↙️ Côté (D)": 0.7,
             "↘️ Côté (G)": 0.7,
-            "⬆️ Dos":    -0.3,  # vent de dos = léger bonus
+            "⬆️ Dos":    -0.3,
             "—":          0.5,
         }
         ve_moy = sum(
@@ -325,7 +249,7 @@ def calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids)
         elif ve_moy <= 45: s_vent = 0.3
         else:              s_vent = 0.0
 
-        # Pluie (2pts) — linéaire
+        # Pluie (2pts)
         pm = sum(cp.get("pluie_pct") or 0 for cp in valides) / len(valides)
         s_pluie = round(max(0.0, 2.0 * (1 - pm / 100)), 2)
 
@@ -335,35 +259,31 @@ def calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids)
 
     # ── PARCOURS (4 pts, plancher 2/4) ────────────────────────────────────────
 
-    # Distance + Dénivelé (2pts) — informatif, jamais punitif
-    dist_km = sum(cp.get("Km", 0) for cp in resultats[-1:])  # dernier checkpoint = distance totale
-    # Distance : 0.5 à 1pt
+    dist_km = sum(cp.get("Km", 0) for cp in resultats[-1:])
     if   dist_km < 30:  s_dist = 0.5
     elif dist_km < 80:  s_dist = 0.7
     elif dist_km < 150: s_dist = 0.9
     else:               s_dist = 1.0
-    # Dénivelé : 0.5 à 1pt
+
     if   d_plus < 300:  s_dplus = 0.5
     elif d_plus < 1000: s_dplus = 0.7
     elif d_plus < 2500: s_dplus = 0.9
     else:               s_dplus = 1.0
 
-    s_parcours = s_dist + s_dplus   # 1.0 à 2.0
+    s_parcours = s_dist + s_dplus
 
-    # Effort estimé (2pts) — basé sur puissance moyenne dans les cols
     if ascensions and ref_val > 0:
         wm  = sum(estimer_watts(a["_pente_moy"], vitesse, poids) for a in ascensions) / len(ascensions)
         pct = wm / ref_val if mode == "⚡ Puissance" else 0.85
-        # Effort modéré = idéal (ni trop facile ni trop dur)
-        if   pct <= 0.50: s_effort = 0.8   # trop facile
+        if   pct <= 0.50: s_effort = 0.8
         elif pct <= 0.70: s_effort = 1.2
-        elif pct <= 0.90: s_effort = 2.0   # zone idéale
+        elif pct <= 0.90: s_effort = 2.0
         elif pct <= 1.05: s_effort = 1.5
-        else:             s_effort = 0.8   # trop dur
+        else:             s_effort = 0.8
     else:
-        s_effort = 1.0   # pas de cols → effort neutre
+        s_effort = 1.0
 
-    sc = max(2.0, s_parcours + s_effort)   # plancher 2/4
+    sc = max(2.0, s_parcours + s_effort)
 
     # ── TOTAL ─────────────────────────────────────────────────────────────────
     total = round(min(10.0, max(0.0, sm + sc)), 1)
@@ -560,12 +480,10 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
     if attr: kwargs["attr"] = attr
     carte = folium.Map(**kwargs)
     
-    # 1. On crée nos "calques" (FeatureGroups)
     fg_meteo = folium.FeatureGroup(name="🌤️ Météo",      show=True)
     fg_cols  = folium.FeatureGroup(name="🏔️ Ascensions", show=True)
     fg_trace = folium.FeatureGroup(name="📍 Parcours",   show=True)
     
-    # 2. On ajoute la ligne bleue et les drapeaux au calque "Parcours"
     folium.PolyLine([[p.latitude, p.longitude] for p in points_gpx],
                     color="#2563eb", weight=5, opacity=0.9).add_to(fg_trace)
     folium.Marker([points_gpx[0].latitude, points_gpx[0].longitude], tooltip="🚦 Départ",
@@ -577,7 +495,6 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
                    "🟡 2ème Cat.":"beige","🟢 3ème Cat.":"green","🔵 4ème Cat.":"blue"}
     cps = list(resultats)
     
-    # 3. On ajoute les cols au calque "Ascensions"
     for asc in ascensions:
         lat_s = asc.get("_lat_sommet")
         lon_s = asc.get("_lon_sommet")
@@ -603,7 +520,6 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
             tooltip=folium.Tooltip(f'▲ {nom if nom != "—" else asc["Catégorie"]} — {asc["Alt. sommet"]}', sticky=True),
             icon=folium.Icon(color=coul, icon="chevron-up", prefix="fa")).add_to(fg_cols)
             
-    # 4. On ajoute les points de contrôle au calque "Météo"
     for cp in resultats:
         t = cp.get("temp_val")
         if t is None: continue
@@ -645,15 +561,12 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
                 f" {vv} km/h", sticky=True),
             icon=folium.Icon(color="blue", icon="info-sign")).add_to(fg_meteo)
 
-    # 5. Ordre d'ajout = ordre dans la légende : Météo en premier
     fg_meteo.add_to(carte)
     fg_cols.add_to(carte)
     fg_trace.add_to(carte)
 
-    # 6. LayerControl natif Folium (fiable) + CSS pour l'habiller
     folium.LayerControl(collapsed=False, position="topright").add_to(carte)
 
-    # Style de la légende Folium via CSS injecté
     css_legende = """
     <style>
     .leaflet-control-layers {
@@ -688,7 +601,6 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
         flex-direction: column !important;
         gap: 2px !important;
     }
-    /* Titre custom au-dessus des calques */
     .leaflet-control-layers-expanded::before {
         content: "🗺️ Calques";
         display: block;
@@ -749,7 +661,6 @@ def main():
     st.sidebar.divider()
     with st.sidebar.expander("🏔️ Détection des montées", expanded=False):
 
-        # Initialisation session_state
         if "sensibilite" not in st.session_state:
             st.session_state.sensibilite = 3
         if "seuil_debut" not in st.session_state:
@@ -759,7 +670,6 @@ def main():
         if "fusion_m" not in st.session_state:
             st.session_state.fusion_m = int(climbing_module.MAX_DESCENTE_FUSION_M)
 
-        # ── Slider principal ──────────────────────────────────────────────────
         SENSIBILITE_LABELS = {
             1: "🔵 Strict — grands cols seulement",
             2: "🟢 Conservateur",
@@ -767,8 +677,6 @@ def main():
             4: "🟠 Sensible",
             5: "🔴 Maximum — toutes les côtes",
         }
-        # Paramètres correspondant à chaque niveau de sensibilité
-        # (seuil_debut, seuil_fin, fusion_m)
         SENSIBILITE_PARAMS = {
             1: (4.0, 2.0,  20),
             2: (3.0, 1.5,  35),
@@ -783,12 +691,10 @@ def main():
         niv = st.session_state.sensibilite
         st.caption(SENSIBILITE_LABELS[niv])
 
-        # Bouton reset — utilise un flag pour réinitialiser au prochain run
         if st.button("↺ Réinitialiser", use_container_width=True):
             st.session_state["_reset_demande"] = True
             st.rerun()
 
-        # Appliquer le reset au début du run suivant
         if st.session_state.pop("_reset_demande", False):
             st.session_state.pop("sensibilite", None)
             st.session_state.pop("seuil_debut", None)
@@ -797,11 +703,9 @@ def main():
             st.session_state.pop("_last_sensibilite", None)
             st.rerun()
 
-        # ── Réglages fins ─────────────────────────────────────────────────────
         with st.expander("⚙️ Réglages fins", expanded=False):
             st.caption("Synchronisés avec la sensibilité — modifiez pour affiner.")
 
-            # Sync depuis sensibilité si changée
             sd_sync, sf_sync, fm_sync = SENSIBILITE_PARAMS[niv]
             if st.session_state.get("_last_sensibilite") != niv:
                 st.session_state.seuil_debut = sd_sync
@@ -819,7 +723,6 @@ def main():
                 key="fusion_m",
                 help="Descente max pour fusionner deux runs en une seule montée.")
 
-        # Injecter dans le module
         climbing_module.SEUIL_DEBUT           = st.session_state.seuil_debut
         climbing_module.SEUIL_FIN             = st.session_state.seuil_fin
         climbing_module.MAX_DESCENTE_FUSION_M = st.session_state.fusion_m
@@ -839,7 +742,7 @@ def main():
             "🤖 Clé API Gemini",
             value="",
             type="password",
-            help="Optionnel. Génère un résumé intelligent de ta sortie. "
+            help="Génère un résumé intelligent de ta sortie. "
                  "Clé gratuite sur aistudio.google.com."
         )
 
@@ -914,11 +817,9 @@ def main():
         with st.spinner("⛰️ Détection des ascensions…"):
             ascensions = detecter_ascensions(df_profil)
 
-    # Enrichir chaque ascension avec les coordonnées GPS exactes du sommet et du départ
-    # (évite l'approximation via les checkpoints météo qui peuvent être loin)
     if ascensions:
         dist_cum = 0.0
-        pt_par_km = {}  # km → point gpx
+        pt_par_km = {} 
         for i in range(1, len(points_gpx)):
             p1, p2 = points_gpx[i-1], points_gpx[i]
             dist_cum += p1.distance_2d(p2) or 0.0
@@ -977,31 +878,7 @@ def main():
     score    = calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids)
     calories = calculer_calories(max(1, poids - 10), temps_s, dist_tot, d_plus, vitesse)
 
-    # Analyse météo détaillée
     analyse_meteo = analyser_meteo_detaillee(resultats, dist_tot)
-
-    # Résumé Gemini (si clé fournie)
-    resume_gemini = None
-    if gemini_key:
-        # Préparer les scalars hashables pour le cache
-        valides_g  = [cp for cp in resultats if cp.get("temp_val") is not None]
-        temp_moy_g = round(sum(cp["temp_val"] for cp in valides_g) / len(valides_g), 1) if valides_g else "?"
-        pluie_moy_g = round(sum(cp.get("pluie_pct") or 0 for cp in valides_g) / len(valides_g)) if valides_g else 0
-        cols_str_g = ", ".join(
-            f"{a.get('Nom','') or a['Catégorie']} ({a['Longueur']}, {a['Dénivelé']}, {a['Pente moy.']})"
-            for a in ascensions[:5]
-        ) if ascensions else "aucune difficulté catégorisée"
-        analyse_str_g = (
-            f"Vent de face {analyse_meteo['pct_face']}% du temps, "
-            f"vent de dos {analyse_meteo['pct_dos']}%, côté {analyse_meteo['pct_cote']}%. "
-            f"Risque de pluie > 50% sur {analyse_meteo['pct_pluie']}% du parcours."
-        ) if analyse_meteo else "données indisponibles"
-        with st.spinner("🤖 Génération du résumé Gemini…"):
-            resume_gemini = generer_resume_gemini(
-                gemini_key, score["total"], score["label"],
-                dist_tot, d_plus, temps_s, vitesse,
-                temp_moy_g, pluie_moy_g, cols_str_g, analyse_str_g
-            )
 
     for asc in ascensions:
         temps_jusqu_debut = (asc["_debut_km"] / vitesse) * 3600
@@ -1064,7 +941,7 @@ def main():
 
     # ── ONGLETS ───────────────────────────────────────────────────────────────
     tab_carte, tab_profil, tab_meteo, tab_cols, tab_detail, tab_analyse = st.tabs([
-        "🗺️ Carte", "⛰️ Profil & Cols", "🌤️ Météo", "🏔️ Ascensions", "📋 Détail", "🤖 Analyse"
+        "🗺️ Carte", "⛰️ Profil & Cols", "🌤️ Météo", "🏔️ Ascensions", "📋 Détail", "🤖 Coach IA"
     ])
 
     with tab_carte:
@@ -1278,19 +1155,34 @@ def main():
                 "Effet vent":  st.column_config.TextColumn("🚴 Effet"),
             })
 
-    # ── ANALYSE ──────────────────────────────────────────────────────────────
+    # ── ANALYSE IA ───────────────────────────────────────────────────────────
     with tab_analyse:
-        if resume_gemini:
-            st.markdown(f"""
-            <div style="background:linear-gradient(135deg,#1e3a5f,#1e40af);
-                        border-radius:12px;padding:20px 24px;color:white;margin-bottom:16px">
-                <div style="font-size:.8rem;opacity:.7;margin-bottom:8px">🤖 Résumé généré par Gemini</div>
-                <div style="font-size:1.05rem;line-height:1.6">{resume_gemini}</div>
-            </div>""", unsafe_allow_html=True)
-        elif gemini_key:
-            st.warning("⚠️ Gemini indisponible — vérifiez votre clé API.")
+        st.subheader("🎙️ Le Briefing du Directeur Sportif")
+        st.markdown("Obtenez une analyse stratégique complète générée par l'Intelligence Artificielle de Google (Gemini) en croisant votre profil altimétrique et les prévisions météo locales.")
+        
+        if not gemini_key:
+            st.info("👈 **Pour activer le coach virtuel**, entrez votre clé API Gemini dans le menu '🔧 Options avancées' situé dans la barre latérale gauche.")
         else:
-            st.info("💡 Ajoutez une clé API Gemini dans les options avancées pour générer un résumé intelligent de votre sortie.")
+            if st.button("💬 Générer le briefing d'avant-course", use_container_width=True):
+                with st.spinner("Le Directeur Sportif analyse vos données (météo, vent, cols)..."):
+                    try:
+                        briefing = generer_briefing(
+                            api_key=gemini_key, 
+                            dist_tot=dist_tot, 
+                            d_plus=d_plus, 
+                            score=score, 
+                            ascensions=ascensions, 
+                            analyse_meteo=analyse_meteo
+                        )
+                        if briefing:
+                            st.success("✅ Briefing généré avec succès !")
+                            st.markdown(f"""
+                            <div style="background-color:#f8fafc; padding:25px; border-radius:12px; border-left:6px solid #2563eb; color:#1e293b; font-size:1.05rem; line-height:1.6; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+                                {briefing}
+                            </div>
+                            """, unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"❌ Erreur lors de la communication avec l'API Gemini. Vérifiez votre clé API. (Détail: {e})")
 
 
 if __name__ == "__main__":
