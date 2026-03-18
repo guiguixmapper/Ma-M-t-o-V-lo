@@ -1,9 +1,17 @@
 """
-overpass.py
-===========
-Détection des cols (Méthode BBox simplifiée + User-Agent).
-On demande tous les points de la zone d'un coup (très léger grâce au filtre ["name"]),
-et on calcule les distances de 500m en local via Python (instantané).
+overpass.py — v2
+================
+Détection des cols, sommets et points remarquables via l'API Overpass (OSM).
+
+Améliorations v2 vs v1 :
+    - Couverture élargie : col, selle, sommet, lieu-dit montagneux, refuge
+    - Rayon de recherche augmenté (800m au lieu de 500m)
+    - Priorité aux nœuds de type col/selle sur les pics et refuges
+    - Filtre sur l'altitude OSM : on préfère le nœud dont l'altitude est
+      la plus proche de l'altitude GPX du sommet (évite les faux positifs
+      plaine/village homonyme)
+    - BBox large + association locale Python (une seule requête pour tout le tracé)
+    - Rotation sur 3 serveurs Overpass + retry
 """
 
 import streamlit as st
@@ -17,137 +25,190 @@ logger = logging.getLogger(__name__)
 OVERPASS_URLS = [
     "https://overpass-api.de/api/interpreter",
     "https://lz4.overpass-api.de/api/interpreter",
-    "https://z.overpass-api.de/api/interpreter"
+    "https://z.overpass-api.de/api/interpreter",
 ]
 
-RAYON_SOMMET_M  = 500    
-TIMEOUT_S       = 25     
-MAX_RETRIES     = 3      
+RAYON_SOMMET_M  = 800    # m — rayon élargi pour les cols non exactement sur le tracé
+TIMEOUT_S       = 25
+MAX_RETRIES     = 3
+
+# Priorité des types de nœuds OSM (plus bas = meilleur)
+PRIORITE_TYPE = {
+    "mountain_pass": 0,   # col officiel — meilleure source
+    "saddle":        1,   # selle / col non nommé officiellement
+    "peak":          2,   # sommet
+    "locality":      3,   # lieu-dit montagneux
+    "alpine_hut":    4,   # refuge (souvent au col)
+}
 
 
 def _haversine(lat1, lon1, lat2, lon2) -> float:
-    R    = 6371000
+    """Distance en mètres entre deux points GPS."""
+    R  = 6371000
     φ1, φ2 = math.radians(lat1), math.radians(lat2)
-    dφ   = math.radians(lat2 - lat1)
-    dλ   = math.radians(lon2 - lon1)
-    a    = math.sin(dφ/2)**2 + math.cos(φ1)*math.cos(φ2)*math.sin(dλ/2)**2
+    dφ = math.radians(lat2 - lat1)
+    dλ = math.radians(lon2 - lon1)
+    a  = math.sin(dφ/2)**2 + math.cos(φ1)*math.cos(φ2)*math.sin(dλ/2)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 def _point_au_km(points_gpx, km_cible) -> tuple | None:
+    """Retourne (lat, lon) du point GPX le plus proche d'une distance cible (km)."""
     if not points_gpx:
         return None
-    dist_cum = 0.0
-    best_pt  = points_gpx[0]
-    best_diff = abs(dist_cum/1000 - km_cible)
+    dist_cum  = 0.0
+    best_pt   = points_gpx[0]
+    best_diff = abs(dist_cum / 1000 - km_cible)
     for i in range(1, len(points_gpx)):
         p1, p2 = points_gpx[i-1], points_gpx[i]
-        d = p1.distance_2d(p2) or 0.0
-        dist_cum += d
-        diff = abs(dist_cum/1000 - km_cible)
+        dist_cum += p1.distance_2d(p2) or 0.0
+        diff = abs(dist_cum / 1000 - km_cible)
         if diff < best_diff:
             best_diff = diff
             best_pt   = p2
     return best_pt.latitude, best_pt.longitude
 
 
+def _type_noeud(tags: dict) -> str:
+    """Détermine le type OSM d'un nœud selon ses tags."""
+    if tags.get("mountain_pass") == "yes":
+        return "mountain_pass"
+    nat = tags.get("natural", "")
+    if nat == "saddle":
+        return "saddle"
+    if nat == "peak":
+        return "peak"
+    if tags.get("place") == "locality":
+        return "locality"
+    if tags.get("tourism") == "alpine_hut":
+        return "alpine_hut"
+    return "other"
+
+
 def enrichir_cols(ascensions: list, points_gpx: list) -> list:
+    """
+    Enrichit chaque ascension avec le nom OSM du col/sommet au sommet du tracé.
+
+    Stratégie :
+        1. Une seule requête Overpass sur la BBox du parcours
+        2. Filtre les nœuds nommés de types : col, selle, sommet, lieu-dit, refuge
+        3. Pour chaque ascension, cherche dans un rayon de RAYON_SOMMET_M
+        4. En cas de plusieurs candidats, choisit selon :
+           - Priorité du type (col > selle > sommet > lieu-dit > refuge)
+           - À type égal, le plus proche en distance
+           - Si altitude OSM disponible, préfère le nœud dont l'altitude
+             est la plus proche de l'altitude GPX (±200m de tolérance max)
+
+    Ajoute les clés "Nom" et "Nom OSM alt" à chaque ascension.
+    """
     if not ascensions or not points_gpx:
         return ascensions
 
+    # Coordonnées GPX des sommets
     coords_sommets = []
     for asc in ascensions:
         coords = _point_au_km(points_gpx, asc["_sommet_km"])
         if coords:
-            coords_sommets.append((asc, coords[0], coords[1]))
+            # Récupère l'altitude GPX du sommet pour le filtrage altitude OSM
+            alt_gpx = None
+            try:
+                alt_str = asc.get("Alt. sommet", "").replace(" m", "").strip()
+                alt_gpx = int(alt_str) if alt_str else None
+            except (ValueError, AttributeError):
+                pass
+            coords_sommets.append((asc, coords[0], coords[1], alt_gpx))
         else:
-            asc["Nom"] = "—"
-            asc["Nom OSM alt"] = None
+            asc["Nom"] = "—"; asc["Nom OSM alt"] = None
 
     if not coords_sommets:
         return ascensions
 
-    # 1. Bounding Box large englobant le parcours
-    lats = [p.latitude for p in points_gpx]
+    # BBox englobant tout le parcours + marge
+    lats = [p.latitude  for p in points_gpx]
     lons = [p.longitude for p in points_gpx]
-    min_lat, max_lat = min(lats) - 0.05, max(lats) + 0.05
-    min_lon, max_lon = min(lons) - 0.05, max(lons) + 0.05
+    min_lat = min(lats) - 0.05; max_lat = max(lats) + 0.05
+    min_lon = min(lons) - 0.05; max_lon = max(lons) + 0.05
 
-    # 2. Requête ultra-simple : "Donne-moi les cols et pics nommés du rectangle"
+    # Requête Overpass — tous les types utiles en une seule passe
     query = f"""
-    [out:json][timeout:{TIMEOUT_S}][bbox:{min_lat:.5f},{min_lon:.5f},{max_lat:.5f},{max_lon:.5f}];
-    (
-      node["mountain_pass"="yes"];
-      node["natural"="saddle"];
-      node["natural"="peak"]["name"];
-    );
-    out body;
-    """
-
-    # LE PASSE-DROIT : On se fait passer pour un vrai navigateur / une vraie application
+[out:json][timeout:{TIMEOUT_S}][bbox:{min_lat:.5f},{min_lon:.5f},{max_lat:.5f},{max_lon:.5f}];
+(
+  node["mountain_pass"="yes"];
+  node["natural"="saddle"];
+  node["natural"="peak"]["name"];
+  node["place"="locality"]["name"];
+  node["tourism"="alpine_hut"]["name"];
+);
+out body;
+"""
     headers = {
-        "User-Agent": "VeloMeteoApp/6.0 (Contact: cycliste@example.com) Streamlit",
-        "Content-Type": "application/x-www-form-urlencoded"
+        "User-Agent":   "VeloMeteoApp/7.0 (cycliste@example.com) Streamlit",
+        "Content-Type": "application/x-www-form-urlencoded",
     }
 
     osm_nodes = []
-    succes_api = False
-    
-    # 3. Interrogation d'Overpass
+    succes    = False
+
     for tentative in range(MAX_RETRIES):
-        serveur_actuel = OVERPASS_URLS[tentative % len(OVERPASS_URLS)]
+        serveur = OVERPASS_URLS[tentative % len(OVERPASS_URLS)]
         try:
-            r = requests.post(serveur_actuel, data={"data": query}, headers=headers, timeout=TIMEOUT_S)
-            
+            r = requests.post(serveur, data={"data": query},
+                              headers=headers, timeout=TIMEOUT_S)
             if r.status_code in [429, 503, 504]:
-                raise Exception(f"Serveur surchargé (Code {r.status_code})")
-                
+                raise Exception(f"Serveur surchargé ({r.status_code})")
             r.raise_for_status()
-            elements = r.json().get("elements", [])
-            
-            for el in elements:
+
+            for el in r.json().get("elements", []):
                 tags = el.get("tags", {})
-                nom = tags.get("name:fr") or tags.get("name") or tags.get("name:en")
+                # Nom : français prioritaire
+                nom = (tags.get("name:fr")
+                       or tags.get("name")
+                       or tags.get("name:en"))
                 if not nom:
                     continue
                 alt_tag = tags.get("ele")
                 try:    alt = int(float(alt_tag)) if alt_tag else None
                 except: alt = None
-                
                 osm_nodes.append({
-                    "nom": nom,
-                    "alt": alt,
-                    "lat": el["lat"],
-                    "lon": el["lon"],
+                    "nom":      nom,
+                    "alt":      alt,
+                    "lat":      el["lat"],
+                    "lon":      el["lon"],
+                    "type":     _type_noeud(tags),
+                    "priorite": PRIORITE_TYPE.get(_type_noeud(tags), 99),
                 })
-            
-            succes_api = True
-            break  # Succès immédiat, on sort de la boucle
-            
+            succes = True
+            break
+
         except Exception as e:
-            logger.warning(f"Tentative {tentative + 1} échouée sur {serveur_actuel} : {e}")
+            logger.warning(f"Overpass tentative {tentative+1} ({serveur}) : {e}")
             if tentative < MAX_RETRIES - 1:
                 time.sleep(2)
 
-    if not succes_api:
-        st.toast("⚠️ OSM instable : noms des cols potentiellement manquants.")
+    if not succes:
+        st.toast("⚠️ OSM instable — noms des cols potentiellement manquants.")
 
-    # 4. Association mathématique rapide en local (Python)
-    for asc, lat, lon in coords_sommets:
-        meilleur_noeud = None
-        meilleure_dist = RAYON_SOMMET_M
+    # Association locale pour chaque sommet
+    for asc, lat, lon, alt_gpx in coords_sommets:
+        candidats = []
+        for nd in osm_nodes:
+            dist = _haversine(lat, lon, nd["lat"], nd["lon"])
+            if dist <= RAYON_SOMMET_M:
+                # Pénalité altitude : si l'alt OSM est disponible et diffère
+                # de plus de 200m de l'alt GPX, on écarte le candidat
+                if alt_gpx and nd["alt"]:
+                    if abs(nd["alt"] - alt_gpx) > 200:
+                        continue
+                candidats.append({**nd, "dist": dist})
 
-        for noeud in osm_nodes:
-            dist = _haversine(lat, lon, noeud["lat"], noeud["lon"])
-            if dist < meilleure_dist:
-                meilleure_dist = dist
-                meilleur_noeud = noeud
+        if not candidats:
+            asc["Nom"] = "—"; asc["Nom OSM alt"] = None
+            continue
 
-        if meilleur_noeud:
-            asc["Nom"] = meilleur_noeud["nom"]
-            asc["Nom OSM alt"] = meilleur_noeud["alt"]
-        else:
-            asc["Nom"] = "—"
-            asc["Nom OSM alt"] = None
+        # Tri : priorité type d'abord, distance ensuite
+        candidats.sort(key=lambda c: (c["priorite"], c["dist"]))
+        meilleur = candidats[0]
+        asc["Nom"]         = meilleur["nom"]
+        asc["Nom OSM alt"] = meilleur["alt"]
 
     return ascensions
