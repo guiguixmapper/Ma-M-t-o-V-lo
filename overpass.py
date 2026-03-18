@@ -1,7 +1,8 @@
 """
 overpass.py
 ===========
-Détection des cols optimisée via une seule requête Bounding Box (BBox).
+Détection des cols optimisée via une requête ciblée ("Sniper").
+On interroge OSM uniquement dans un rayon de 500m autour des sommets détectés.
 """
 
 import streamlit as st
@@ -43,75 +44,74 @@ def _point_au_km(points_gpx, km_cible) -> tuple | None:
     return best_pt.latitude, best_pt.longitude
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def _requete_cols_bbox(min_lat: float, min_lon: float, max_lat: float, max_lon: float) -> list:
-    """
-    Interroge Overpass en UNE SEULE FOIS pour tout le rectangle du parcours.
-    On utilise le formatage :.5f pour éviter les bugs.
-    NOUVEAU : On inclut les 'peak', mais UNIQUEMENT s'ils ont un nom ["name"].
-    """
+def enrichir_cols(ascensions: list, points_gpx: list) -> list:
+    if not ascensions or not points_gpx:
+        return ascensions
+
+    # 1. On récupère les coordonnées exactes de nos sommets GPX
+    coords_sommets = []
+    for asc in ascensions:
+        coords = _point_au_km(points_gpx, asc["_sommet_km"])
+        if coords:
+            coords_sommets.append((asc, coords[0], coords[1]))
+        else:
+            asc["Nom"] = "—"
+            asc["Nom OSM alt"] = None
+
+    if not coords_sommets:
+        return ascensions
+
+    # 2. On construit une requête ciblant UNIQUEMENT ces points précis (Méthode Sniper)
+    query_parts = []
+    for _, lat, lon in coords_sommets:
+        # Pour chaque sommet, on cherche les cols et les pics nommés à moins de 500m
+        query_parts.append(f'node["mountain_pass"="yes"](around:{RAYON_SOMMET_M},{lat:.5f},{lon:.5f});')
+        query_parts.append(f'node["natural"="saddle"](around:{RAYON_SOMMET_M},{lat:.5f},{lon:.5f});')
+        query_parts.append(f'node["natural"="peak"]["name"](around:{RAYON_SOMMET_M},{lat:.5f},{lon:.5f});')
+
+    query_body = "\n".join(query_parts)
+    
     query = f"""
-    [out:json][timeout:{TIMEOUT_S}][bbox:{min_lat:.5f},{min_lon:.5f},{max_lat:.5f},{max_lon:.5f}];
+    [out:json][timeout:{TIMEOUT_S}];
     (
-      node["mountain_pass"="yes"];
-      node["natural"="saddle"];
-      node["natural"="peak"]["name"];
+{query_body}
     );
     out body;
     """
+
+    # 3. Interrogation d'Overpass en 1 seule requête ultralégère
+    osm_nodes = []
     try:
         r = requests.post(OVERPASS_URL, data={"data": query}, timeout=TIMEOUT_S + 5)
         r.raise_for_status()
         elements = r.json().get("elements", [])
-        results  = []
+        
         for el in elements:
-            tags    = el.get("tags", {})
-            nom     = (tags.get("name:fr") or tags.get("name") or tags.get("name:en"))
+            tags = el.get("tags", {})
+            nom = tags.get("name:fr") or tags.get("name") or tags.get("name:en")
+            if not nom:
+                continue
             alt_tag = tags.get("ele")
             try:    alt = int(float(alt_tag)) if alt_tag else None
             except: alt = None
-            results.append({
+            
+            osm_nodes.append({
                 "nom": nom,
                 "alt": alt,
                 "lat": el["lat"],
                 "lon": el["lon"],
             })
-        return results
+            
     except Exception as e:
-        logger.warning(f"Overpass batch échoué : {e}")
-        return []
+        logger.warning(f"Overpass ciblée échouée : {e}")
+        st.toast("⚠️ Impossible de récupérer les noms des cols. Serveur OSM indisponible.")
 
-
-def enrichir_cols(ascensions: list, points_gpx: list) -> list:
-    if not ascensions or not points_gpx:
-        return ascensions
-
-    # 1. Création de la Bounding Box avec une marge (~1km)
-    lats = [p.latitude for p in points_gpx]
-    lons = [p.longitude for p in points_gpx]
-    min_lat, max_lat = min(lats) - 0.01, max(lats) + 0.01
-    min_lon, max_lon = min(lons) - 0.01, max(lons) + 0.01
-
-    # 2. Récupération des cols et sommets nommés
-    osm_nodes = _requete_cols_bbox(min_lat, min_lon, max_lat, max_lon)
-
-    if not osm_nodes:
-        st.toast("⚠️ Impossible de récupérer les noms des cols. Serveur OSM surchargé ou zone vide.")
-
-    # 3. Association locale
-    for asc in ascensions:
-        coords = _point_au_km(points_gpx, asc["_sommet_km"])
-        if coords is None:
-            asc["Nom"] = "—"; asc["Nom OSM alt"] = None
-            continue
-
-        lat, lon = coords
+    # 4. Association du résultat OSM à notre liste d'ascensions
+    for asc, lat, lon in coords_sommets:
         meilleur_noeud = None
         meilleure_dist = RAYON_SOMMET_M
 
         for noeud in osm_nodes:
-            if not noeud["nom"]: 
-                continue
             dist = _haversine(lat, lon, noeud["lat"], noeud["lon"])
             if dist < meilleure_dist:
                 meilleure_dist = dist
