@@ -2,7 +2,6 @@
 elevation.py
 ============
 Correction du profil altimétrique via OpenRouteService (ORS).
-ORS fournit un modèle d'élévation lissé et précis, idéal pour le cyclisme.
 """
 
 import streamlit as st
@@ -12,11 +11,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 ORS_ELEVATION_URL  = "https://api.openrouteservice.org/elevation/line"
-MAX_POINTS         = 2000  # limite de points par requête (ORS)
+MAX_POINTS         = 1500  # On abaisse la limite à 1500 pour une sécurité totale face à l'API
 
 
 def _requete_ors_line(coords: list, api_key: str) -> list | None:
-    """Envoie un lot de points à ORS en utilisant le format GeoJSON."""
     try:
         headers = {
             "Authorization": api_key,
@@ -31,6 +29,11 @@ def _requete_ors_line(coords: list, api_key: str) -> list | None:
             }
         }
         r = requests.post(ORS_ELEVATION_URL, json=payload, headers=headers, timeout=20)
+        
+        # Si ça plante, on l'affiche dans la console pour savoir pourquoi
+        if r.status_code != 200:
+            logger.error(f"Erreur ORS {r.status_code}: {r.text}")
+            
         r.raise_for_status()
         
         data = r.json()
@@ -52,33 +55,46 @@ def corriger_profil(lats_tuple: tuple, lons_tuple: tuple, alts_tuple: tuple, api
     if n == 0 or not api_key:
         return alts_tuple
 
-    # Sous-échantillonnage pour éviter les doublons parfaits qui font planter l'API
-    indices_echantillon = []
+    # 1. On retire les doublons consécutifs
+    indices_uniques = []
     last_lon, last_lat = None, None
-    for i in range(0, n, max(1, n // MAX_POINTS)):
+    for i in range(n):
         if lons[i] != last_lon or lats[i] != last_lat:
-            indices_echantillon.append(i)
+            indices_uniques.append(i)
             last_lon, last_lat = lons[i], lats[i]
 
-    # --- MÉTHODE ORS ---
+    # 2. Le calcul d'échantillonnage INFAILLIBLE
+    nu = len(indices_uniques)
+    if nu <= MAX_POINTS:
+        indices_echantillon = indices_uniques
+    else:
+        pas = (nu - 1) / (MAX_POINTS - 1)
+        indices_echantillon = [indices_uniques[int(round(i * pas))] for i in range(MAX_POINTS)]
+
+    # 3. Requête à ORS
     coords_ors = [[lons[i], lats[i]] for i in indices_echantillon]
     alts_corrigees_echantillon = _requete_ors_line(coords_ors, api_key)
     
+    # Sécurité en cas d'échec
     if not alts_corrigees_echantillon or len(alts_corrigees_echantillon) != len(indices_echantillon):
-        logger.warning("Erreur avec ORS Elevation. Conservation des altitudes d'origine.")
+        logger.warning("L'API ORS a échoué. Conservation des altitudes d'origine.")
+        st.toast("⚠️ Impossible de corriger l'altimétrie (Serveur ORS a rejeté la demande).")
         return alts_tuple
 
-    # Interpolation linéaire pour reconstruire tous les points intermédiaires
+    # 4. Reconstruction des altitudes pour tous les points (Interpolation)
     alts_out = list(alts)
     for k in range(len(indices_echantillon)):
         i0  = indices_echantillon[k]
         i1  = indices_echantillon[k + 1] if k + 1 < len(indices_echantillon) else n
         a0  = alts_corrigees_echantillon[k]
         a1  = alts_corrigees_echantillon[k + 1] if k + 1 < len(alts_corrigees_echantillon) else a0
+        
         if a0 is None or a1 is None:
             continue
+            
         for j in range(i0, min(i1, n)):
-            t = (j - i0) / max(1, i1 - i0)
+            dist_totale = max(1, i1 - i0)
+            t = (j - i0) / dist_totale
             alts_out[j] = a0 + t * (a1 - a0)
 
     return tuple(alts_out)
