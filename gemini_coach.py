@@ -21,8 +21,8 @@ def generer_briefing(api_key: str, dist_tot: float, d_plus: float,
     try:
         # Configuration de l'API avec la clé
         genai.configure(api_key=api_key)
-        # On utilise le modèle Flash 1.5 : hyper rapide et parfait pour l'analyse de texte
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # On utilise le nouveau modèle Flash 2.5 (le 1.5 a été retiré par Google)
+        model = genai.GenerativeModel('gemini-2.5-flash')
 
         # ── PRÉPARATION DES DONNÉES ──
         dist_km = round(dist_tot / 1000, 1)
