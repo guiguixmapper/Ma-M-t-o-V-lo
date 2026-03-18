@@ -384,8 +384,10 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
     
     # 3. On ajoute les cols au calque "Ascensions"
     for asc in ascensions:
-        best = min(cps, key=lambda cp: abs(cp["Km"] - asc["_sommet_km"]), default=None)
-        if best is None: continue
+        lat_s = asc.get("_lat_sommet")
+        lon_s = asc.get("_lon_sommet")
+        if lat_s is None or lon_s is None:
+            continue
         nom     = asc.get("Nom", "—")
         coul    = COULEUR_COL.get(asc["Catégorie"], "blue")
         alt_osm = asc.get("Nom OSM alt")
@@ -401,7 +403,7 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
             + (f'<div style="margin-top:5px">⏱️ {asc.get("Temps col","—")} &nbsp;·&nbsp; arr. {asc.get("Arrivée sommet","—")}</div>'
                if asc.get("Temps col") else "")
             + '</div>')
-        folium.Marker([best["lat"], best["lon"]],
+        folium.Marker([lat_s, lon_s],
             popup=folium.Popup(popup_col, max_width=260),
             tooltip=folium.Tooltip(f'▲ {nom if nom != "—" else asc["Catégorie"]} — {asc["Alt. sommet"]}', sticky=True),
             icon=folium.Icon(color=coul, icon="chevron-up", prefix="fa")).add_to(fg_cols)
@@ -606,6 +608,32 @@ def main():
     with etapes.container():
         with st.spinner("⛰️ Détection des ascensions…"):
             ascensions = detecter_ascensions(df_profil)
+
+    # Enrichir chaque ascension avec les coordonnées GPS exactes du sommet et du départ
+    # (évite l'approximation via les checkpoints météo qui peuvent être loin)
+    if ascensions:
+        dist_cum = 0.0
+        pt_par_km = {}  # km → point gpx
+        for i in range(1, len(points_gpx)):
+            p1, p2 = points_gpx[i-1], points_gpx[i]
+            dist_cum += p1.distance_2d(p2) or 0.0
+            km = round(dist_cum / 1000, 3)
+            pt_par_km[km] = p2
+
+        def coords_au_km(km_cible):
+            if not pt_par_km:
+                return None, None
+            km_proche = min(pt_par_km.keys(), key=lambda k: abs(k - km_cible))
+            pt = pt_par_km[km_proche]
+            return pt.latitude, pt.longitude
+
+        for asc in ascensions:
+            lat_s, lon_s = coords_au_km(asc["_sommet_km"])
+            lat_d, lon_d = coords_au_km(asc["_debut_km"])
+            asc["_lat_sommet"] = lat_s
+            asc["_lon_sommet"] = lon_s
+            asc["_lat_debut"]  = lat_d
+            asc["_lon_debut"]  = lon_d
 
     # ── NOMS OSM ──────────────────────────────────────────────────────────────
     if noms_osm and ascensions:
