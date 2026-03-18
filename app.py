@@ -1,10 +1,24 @@
 """
-🚴‍♂️ Vélo & Météo — v6
-Nouveautés v6 :
-    - Correction altimétrique exclusivement via OpenRouteService (précis et lissé)
-    - Noms des cols via OpenStreetMap / Overpass (Méthode Sniper + Retry)
-    - Temps de parcours via OpenRouteService (clé API requise)
-    - Calques sur la carte pour alléger l'affichage
+🚴‍♂️ Vélo & Météo — v7
+================
+Analyse de tracé GPX : météo en temps réel, cols UCI, profil interactif,
+zones d'entraînement et score de conditions.
+
+Nouveautés v7 :
+    - Algorithme de détection slope-first avec slider de sensibilité 1→5
+    - Score refait : Météo (6pts) + Parcours (4pts) — conditions-first
+    - Marqueurs de cols positionnés sur les coordonnées GPS exactes
+    - Légende carte stylée, calques réordonnés (Météo en premier)
+    - Suppression ORS routing et correction altimétrique (D+ natif fiable)
+    - Fix flèches vent de côté
+    - Fix Arrow serialization (colonnes vent/rafales)
+    - width='stretch' (dépréciation use_container_width)
+
+Stack :
+    - Météo    : Open-Meteo (gratuit, sans clé)
+    - Cols OSM : Overpass API (cache 24h, 4 serveurs en rotation)
+    - Carte    : Folium + Leaflet
+    - Profil   : Plotly
 """
 
 import streamlit as st
