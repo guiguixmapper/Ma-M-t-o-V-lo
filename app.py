@@ -231,16 +231,18 @@ def analyser_meteo_detaillee(resultats, dist_tot):
     }
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def generer_resume_gemini(gemini_key, score_total, score_label,
                           dist_tot, d_plus, temps_s, vitesse,
                           temp_moy, pluie_moy, cols_str, analyse_str):
     """
-    Génère un résumé textuel de la sortie via Gemini 1.5 Flash.
-    Retourne le texte ou None en cas d'erreur.
+    Génère un résumé textuel de la sortie via Gemini 2.0 Flash.
+    Mis en cache 24h — ne se relance jamais lors des interactions UI.
+    Retry automatique si quota dépassé (429).
     """
     if not gemini_key:
         return None
+    import time
     dh = int(temps_s // 3600); dm = int((temps_s % 3600) // 60)
     prompt = (
         f"Tu es un coach cycliste. Génère un résumé concis et encourageant en français "
@@ -256,16 +258,25 @@ def generer_resume_gemini(gemini_key, score_total, score_label,
         f"- Vent : {analyse_str}\n"
         f"Pas de liste, pas de titre, juste un paragraphe fluide."
     )
-    try:
-        url  = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-2.0-flash:generateContent?key={gemini_key}")
-        body = {"contents": [{"parts": [{"text": prompt}]}]}
-        r    = requests.post(url, json=body, timeout=15)
-        r.raise_for_status()
-        return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception as e:
-        logger.warning(f"Gemini : {e}")
-        return None
+    url  = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"gemini-2.0-flash:generateContent?key={gemini_key}")
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
+    for tentative in range(2):
+        try:
+            r = requests.post(url, json=body, timeout=15)
+            if r.status_code == 429:
+                if tentative == 0:
+                    time.sleep(10)   # quota dépassé → attendre 10s et réessayer
+                    continue
+                else:
+                    logger.warning("Gemini : quota dépassé (429) — réessayez dans quelques secondes.")
+                    return None
+            r.raise_for_status()
+            return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except Exception as e:
+            logger.warning(f"Gemini : {e}")
+            return None
+    return None
 
 
 def calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids):
