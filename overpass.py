@@ -26,11 +26,13 @@ OVERPASS_URLS = [
     "https://overpass-api.de/api/interpreter",
     "https://lz4.overpass-api.de/api/interpreter",
     "https://z.overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",  # serveur communautaire stable
 ]
 
-RAYON_SOMMET_M  = 800    # m — rayon élargi pour les cols non exactement sur le tracé
+RAYON_SOMMET_M  = 800
 TIMEOUT_S       = 25
-MAX_RETRIES     = 3
+MAX_RETRIES     = 4
+RETRY_DELAYS    = [2, 5, 10]  # secondes entre chaque tentative (croissant)
 
 # Priorité des types de nœuds OSM (plus bas = meilleur)
 PRIORITE_TYPE = {
@@ -183,7 +185,8 @@ out body;
         except Exception as e:
             logger.warning(f"Overpass tentative {tentative+1} ({serveur}) : {e}")
             if tentative < MAX_RETRIES - 1:
-                time.sleep(2)
+                delay = RETRY_DELAYS[min(tentative, len(RETRY_DELAYS) - 1)]
+                time.sleep(delay)
 
     if not succes:
         st.toast("⚠️ OSM instable — noms des cols potentiellement manquants.")
