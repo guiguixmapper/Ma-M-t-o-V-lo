@@ -17,21 +17,29 @@ MAX_POINTS         = 2000  # limite de points par requête (ORS)
 
 
 def _requete_ors_line(coords: list, api_key: str) -> list | None:
-    """Envoie un lot de points à ORS. coords = [[lon, lat], [lon, lat]...]"""
+    """Envoie un lot de points à ORS en utilisant le format GeoJSON (ultra fiable)."""
     try:
         headers = {
             "Authorization": api_key,
             "Content-Type": "application/json"
         }
+        # Format GeoJSON standard au lieu de polyline pour éviter les rejets de l'API
         payload = {
-            "format_in": "polyline",
-            "format_out": "polyline",
-            "geometry": coords
+            "format_in": "geojson",
+            "format_out": "geojson",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": coords
+            }
         }
         r = requests.post(ORS_ELEVATION_URL, json=payload, headers=headers, timeout=20)
         r.raise_for_status()
-        data = r.json().get("geometry", [])
-        return [pt[2] for pt in data if len(pt) >= 3]
+        
+        # ORS renvoie les données sous la forme [longitude, latitude, altitude]
+        data = r.json()
+        if "geometry" in data and "coordinates" in data["geometry"]:
+            return [pt[2] for pt in data["geometry"]["coordinates"] if len(pt) >= 3]
+        return None
     except Exception as e:
         logger.warning(f"ORS Elevation échoué : {e}")
         return None
@@ -81,6 +89,7 @@ def corriger_profil(lats_tuple: tuple, lons_tuple: tuple, alts_tuple: tuple, api
             
         coords_ors = [[lons[i], lats[i]] for i in indices_echantillon]
         res_ors = _requete_ors_line(coords_ors, api_key)
+        
         if res_ors and len(res_ors) == len(indices_echantillon):
             alts_corrigees_echantillon = res_ors
         else:
@@ -102,7 +111,7 @@ def corriger_profil(lats_tuple: tuple, lons_tuple: tuple, alts_tuple: tuple, api
     if len(alts_corrigees_echantillon) != len(indices_echantillon):
         return alts_tuple
 
-    # Interpolation linéaire pour reconstruire tous les points
+    # Interpolation linéaire pour reconstruire tous les points intermédiaires
     alts_out = list(alts)
     for k in range(len(indices_echantillon)):
         i0  = indices_echantillon[k]
