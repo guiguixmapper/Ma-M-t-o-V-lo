@@ -1,13 +1,7 @@
 """
 overpass.py
 ===========
-Détection des cols et points remarquables sur un tracé GPX via l'API Overpass (OpenStreetMap).
-
-On interroge OSM pour trouver les nœuds de type "col" (mountain_pass, saddle)
-à proximité du tracé, puis on les associe aux ascensions détectées.
-
-Fonctions publiques :
-    - enrichir_cols(ascensions, points_gpx) → ascensions avec champ "Nom" ajouté
+Détection des cols optimisée via une seule requête Bounding Box (BBox).
 """
 
 import streamlit as st
@@ -18,8 +12,8 @@ import math
 logger = logging.getLogger(__name__)
 
 OVERPASS_URL    = "https://overpass-api.de/api/interpreter"
-RAYON_SOMMET_M  = 500    # m — rayon de recherche autour du sommet d'une ascension
-TIMEOUT_S       = 15
+RAYON_SOMMET_M  = 500    # m — rayon de recherche local
+TIMEOUT_S       = 25     # Légèrement augmenté pour une grande zone
 
 
 def _haversine(lat1, lon1, lat2, lon2) -> float:
@@ -33,13 +27,8 @@ def _haversine(lat1, lon1, lat2, lon2) -> float:
 
 
 def _point_au_km(points_gpx, km_cible) -> tuple | None:
-    """
-    Retourne le point GPX (lat, lon) le plus proche d'une distance donnée (km).
-    Nécessite que les points GPX aient une distance cumulée.
-    """
     if not points_gpx:
         return None
-    # On reconstruit la distance cumulée à la volée
     dist_cum = 0.0
     best_pt  = points_gpx[0]
     best_diff = abs(dist_cum/1000 - km_cible)
@@ -54,19 +43,18 @@ def _point_au_km(points_gpx, km_cible) -> tuple | None:
     return best_pt.latitude, best_pt.longitude
 
 
-def _requete_cols(lat: float, lon: float, rayon_m: int = RAYON_SOMMET_M) -> list:
+@st.cache_data(ttl=86400, show_spinner=False)
+def _requete_cols_bbox(min_lat: float, min_lon: float, max_lat: float, max_lon: float) -> list:
     """
-    Interroge Overpass pour trouver les cols/sommets dans un rayon autour d'un point.
-
-    Returns:
-        Liste de dicts {"nom": str, "alt": int|None, "lat": float, "lon": float, "dist_m": float}
+    Interroge Overpass en UNE SEULE FOIS pour tout le rectangle du parcours.
+    (south, west, north, east)
     """
     query = f"""
     [out:json][timeout:{TIMEOUT_S}];
     (
-      node["mountain_pass"="yes"](around:{rayon_m},{lat},{lon});
-      node["natural"="saddle"](around:{rayon_m},{lat},{lon});
-      node["natural"="peak"](around:{rayon_m},{lat},{lon});
+      node["mountain_pass"="yes"]({min_lat},{min_lon},{max_lat},{max_lon});
+      node["natural"="saddle"]({min_lat},{min_lon},{max_lat},{max_lon});
+      node["natural"="peak"]({min_lat},{min_lon},{max_lat},{max_lon});
     );
     out body;
     """
@@ -77,66 +65,59 @@ def _requete_cols(lat: float, lon: float, rayon_m: int = RAYON_SOMMET_M) -> list
         results  = []
         for el in elements:
             tags    = el.get("tags", {})
-            nom     = (tags.get("name:fr")
-                       or tags.get("name")
-                       or tags.get("name:en")
-                       or None)
+            nom     = (tags.get("name:fr") or tags.get("name") or tags.get("name:en"))
             alt_tag = tags.get("ele")
             try:    alt = int(float(alt_tag)) if alt_tag else None
             except: alt = None
-            dist = _haversine(lat, lon, el["lat"], el["lon"])
             results.append({
-                "nom":    nom,
-                "alt":    alt,
-                "lat":    el["lat"],
-                "lon":    el["lon"],
-                "dist_m": dist,
+                "nom": nom,
+                "alt": alt,
+                "lat": el["lat"],
+                "lon": el["lon"],
             })
-        # Trier par proximité
-        results.sort(key=lambda x: x["dist_m"])
         return results
     except Exception as e:
-        logger.warning(f"Overpass échoué pour ({lat:.4f}, {lon:.4f}) : {e}")
+        logger.warning(f"Overpass batch échoué : {e}")
         return []
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def _requete_cols_cached(lat: float, lon: float) -> list:
-    """Version cachée 24h de _requete_cols."""
-    return _requete_cols(lat, lon)
-
-
 def enrichir_cols(ascensions: list, points_gpx: list) -> list:
-    """
-    Enrichit chaque ascension avec le nom OSM du col au sommet (si trouvé).
+    if not ascensions or not points_gpx:
+        return ascensions
 
-    Ajoute les clés :
-        "Nom"         → str  — nom du col (ex. "Col du Galibier") ou "—"
-        "Nom OSM alt" → int|None — altitude OSM du col (peut différer du GPX)
+    # 1. Création de la Bounding Box avec une marge (~1km)
+    lats = [p.latitude for p in points_gpx]
+    lons = [p.longitude for p in points_gpx]
+    min_lat, max_lat = min(lats) - 0.01, max(lats) + 0.01
+    min_lon, max_lon = min(lons) - 0.01, max(lons) + 0.01
 
-    Args:
-        ascensions  : liste de dicts retournée par detecter_ascensions()
-        points_gpx  : liste de points gpxpy
+    # 2. Récupération de TOUS les cols de la région d'un coup
+    osm_nodes = _requete_cols_bbox(min_lat, min_lon, max_lat, max_lon)
 
-    Returns:
-        La même liste enrichie (modifiée in-place ET retournée).
-    """
+    # 3. Association locale
     for asc in ascensions:
         coords = _point_au_km(points_gpx, asc["_sommet_km"])
         if coords is None:
-            asc["Nom"]         = "—"
-            asc["Nom OSM alt"] = None
+            asc["Nom"] = "—"; asc["Nom OSM alt"] = None
             continue
 
         lat, lon = coords
-        candidats = _requete_cols_cached(round(lat, 4), round(lon, 4))
+        meilleur_noeud = None
+        meilleure_dist = RAYON_SOMMET_M
 
-        if candidats and candidats[0]["nom"]:
-            meilleur        = candidats[0]
-            asc["Nom"]      = meilleur["nom"]
-            asc["Nom OSM alt"] = meilleur["alt"]
+        for noeud in osm_nodes:
+            if not noeud["nom"]: # On ignore les bosses sans nom
+                continue
+            dist = _haversine(lat, lon, noeud["lat"], noeud["lon"])
+            if dist < meilleure_dist:
+                meilleure_dist = dist
+                meilleur_noeud = noeud
+
+        if meilleur_noeud:
+            asc["Nom"] = meilleur_noeud["nom"]
+            asc["Nom OSM alt"] = meilleur_noeud["alt"]
         else:
-            asc["Nom"]         = "—"
+            asc["Nom"] = "—"
             asc["Nom OSM alt"] = None
 
     return ascensions
