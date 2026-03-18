@@ -87,19 +87,75 @@ def _type_noeud(tags: dict) -> str:
     return "other"
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def _requete_osm_cached(min_lat: float, max_lat: float,
+                        min_lon: float, max_lon: float) -> list:
+    """
+    Requête Overpass cachée 24h — retourne la liste brute des nœuds OSM
+    dans la BBox donnée. Séparée de enrichir_cols pour être hashable.
+    """
+    query = f"""
+[out:json][timeout:{TIMEOUT_S}][bbox:{min_lat:.5f},{min_lon:.5f},{max_lat:.5f},{max_lon:.5f}];
+(
+  node["mountain_pass"="yes"];
+  node["natural"="saddle"];
+  node["natural"="peak"]["name"];
+  node["place"="locality"]["name"];
+  node["tourism"="alpine_hut"]["name"];
+);
+out body;
+"""
+    headers = {
+        "User-Agent":   "VeloMeteoApp/7.0 (cycliste@example.com) Streamlit",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+
+    for tentative in range(MAX_RETRIES):
+        serveur = OVERPASS_URLS[tentative % len(OVERPASS_URLS)]
+        try:
+            r = requests.post(serveur, data={"data": query},
+                              headers=headers, timeout=TIMEOUT_S)
+            if r.status_code in [429, 503, 504]:
+                raise Exception(f"Serveur surchargé ({r.status_code})")
+            r.raise_for_status()
+
+            nodes = []
+            for el in r.json().get("elements", []):
+                tags = el.get("tags", {})
+                nom  = (tags.get("name:fr")
+                        or tags.get("name")
+                        or tags.get("name:en"))
+                if not nom:
+                    continue
+                alt_tag = tags.get("ele")
+                try:    alt = int(float(alt_tag)) if alt_tag else None
+                except: alt = None
+                nodes.append({
+                    "nom":      nom,
+                    "alt":      alt,
+                    "lat":      el["lat"],
+                    "lon":      el["lon"],
+                    "type":     _type_noeud(tags),
+                    "priorite": PRIORITE_TYPE.get(_type_noeud(tags), 99),
+                })
+            return nodes
+
+        except Exception as e:
+            logger.warning(f"Overpass tentative {tentative+1} ({serveur}) : {e}")
+            if tentative < MAX_RETRIES - 1:
+                delay = RETRY_DELAYS[min(tentative, len(RETRY_DELAYS) - 1)]
+                time.sleep(delay)
+
+    st.toast("⚠️ OSM instable — noms des cols potentiellement manquants.")
+    return []
+
+
 def enrichir_cols(ascensions: list, points_gpx: list) -> list:
     """
-    Enrichit chaque ascension avec le nom OSM du col/sommet au sommet du tracé.
+    Enrichit chaque ascension avec le nom OSM du col/sommet.
 
-    Stratégie :
-        1. Une seule requête Overpass sur la BBox du parcours
-        2. Filtre les nœuds nommés de types : col, selle, sommet, lieu-dit, refuge
-        3. Pour chaque ascension, cherche dans un rayon de RAYON_SOMMET_M
-        4. En cas de plusieurs candidats, choisit selon :
-           - Priorité du type (col > selle > sommet > lieu-dit > refuge)
-           - À type égal, le plus proche en distance
-           - Si altitude OSM disponible, préfère le nœud dont l'altitude
-             est la plus proche de l'altitude GPX (±200m de tolérance max)
+    La requête Overpass est mise en cache 24h via _requete_osm_cached —
+    les interactions UI (selectbox, slider) ne déclenchent plus de nouvel appel réseau.
 
     Ajoute les clés "Nom" et "Nom OSM alt" à chaque ascension.
     """
@@ -111,7 +167,6 @@ def enrichir_cols(ascensions: list, points_gpx: list) -> list:
     for asc in ascensions:
         coords = _point_au_km(points_gpx, asc["_sommet_km"])
         if coords:
-            # Récupère l'altitude GPX du sommet pour le filtrage altitude OSM
             alt_gpx = None
             try:
                 alt_str = asc.get("Alt. sommet", "").replace(" m", "").strip()
@@ -131,65 +186,11 @@ def enrichir_cols(ascensions: list, points_gpx: list) -> list:
     min_lat = min(lats) - 0.05; max_lat = max(lats) + 0.05
     min_lon = min(lons) - 0.05; max_lon = max(lons) + 0.05
 
-    # Requête Overpass — tous les types utiles en une seule passe
-    query = f"""
-[out:json][timeout:{TIMEOUT_S}][bbox:{min_lat:.5f},{min_lon:.5f},{max_lat:.5f},{max_lon:.5f}];
-(
-  node["mountain_pass"="yes"];
-  node["natural"="saddle"];
-  node["natural"="peak"]["name"];
-  node["place"="locality"]["name"];
-  node["tourism"="alpine_hut"]["name"];
-);
-out body;
-"""
-    headers = {
-        "User-Agent":   "VeloMeteoApp/7.0 (cycliste@example.com) Streamlit",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-
-    osm_nodes = []
-    succes    = False
-
-    for tentative in range(MAX_RETRIES):
-        serveur = OVERPASS_URLS[tentative % len(OVERPASS_URLS)]
-        try:
-            r = requests.post(serveur, data={"data": query},
-                              headers=headers, timeout=TIMEOUT_S)
-            if r.status_code in [429, 503, 504]:
-                raise Exception(f"Serveur surchargé ({r.status_code})")
-            r.raise_for_status()
-
-            for el in r.json().get("elements", []):
-                tags = el.get("tags", {})
-                # Nom : français prioritaire
-                nom = (tags.get("name:fr")
-                       or tags.get("name")
-                       or tags.get("name:en"))
-                if not nom:
-                    continue
-                alt_tag = tags.get("ele")
-                try:    alt = int(float(alt_tag)) if alt_tag else None
-                except: alt = None
-                osm_nodes.append({
-                    "nom":      nom,
-                    "alt":      alt,
-                    "lat":      el["lat"],
-                    "lon":      el["lon"],
-                    "type":     _type_noeud(tags),
-                    "priorite": PRIORITE_TYPE.get(_type_noeud(tags), 99),
-                })
-            succes = True
-            break
-
-        except Exception as e:
-            logger.warning(f"Overpass tentative {tentative+1} ({serveur}) : {e}")
-            if tentative < MAX_RETRIES - 1:
-                delay = RETRY_DELAYS[min(tentative, len(RETRY_DELAYS) - 1)]
-                time.sleep(delay)
-
-    if not succes:
-        st.toast("⚠️ OSM instable — noms des cols potentiellement manquants.")
+    # Requête cachée — ne sera pas rejouée lors des interactions UI
+    osm_nodes = _requete_osm_cached(
+        round(min_lat, 5), round(max_lat, 5),
+        round(min_lon, 5), round(max_lon, 5)
+    )
 
     # Association locale pour chaque sommet
     for asc, lat, lon, alt_gpx in coords_sommets:
