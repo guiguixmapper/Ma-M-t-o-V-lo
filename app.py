@@ -839,14 +839,16 @@ def main():
         lignes = []
         for cp in resultats:
             t = cp.get("temp_val")
+            v = cp.get("vent_val")
+            rg = cp.get("rafales_val")
             lignes.append({
                 "Heure": cp["Heure"], "Km": cp["Km"], "Alt (m)": cp["Alt (m)"],
                 "Ciel": cp.get("Ciel","—"),
                 "Temp (°C)": f"{t}°C" if t is not None else "—",
                 "Ressenti": label_wind_chill(cp.get("ressenti")),
                 "Pluie": cp.get("Pluie","—"),
-                "Vent (km/h)": cp.get("vent_val") or "—",
-                "Rafales": cp.get("rafales_val") or "—",
+                "Vent (km/h)": f"{v} km/h" if v is not None else "—",
+                "Rafales": f"{rg} km/h" if rg is not None else "—",
                 "Direction": cp.get("Dir","—"),
                 "Effet vent": cp.get("effet","—"),
             })
