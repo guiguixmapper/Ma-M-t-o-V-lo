@@ -169,6 +169,128 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
 # SCORE GLOBAL
 # ==============================================================================
 
+def analyser_meteo_detaillee(resultats, dist_tot):
+    """
+    Analyse détaillée pluie + vent depuis les checkpoints météo.
+    Retourne un dict avec les stats clés.
+    """
+    valides = [cp for cp in resultats if cp.get("temp_val") is not None]
+    if not valides:
+        return None
+
+    dist_totale_km = dist_tot / 1000
+
+    # ── Pluie ────────────────────────────────────────────────────────────────
+    cps_pluie = [cp for cp in valides if (cp.get("pluie_pct") or 0) >= 50]
+    pct_pluie = len(cps_pluie) / len(valides) * 100
+
+    # Trouver le premier checkpoint avec risque de pluie > 50%
+    premier_pluie = None
+    for cp in valides:
+        if (cp.get("pluie_pct") or 0) >= 50:
+            premier_pluie = cp
+            break
+
+    # ── Vent ─────────────────────────────────────────────────────────────────
+    compteur_effet = {"⬇️ Face": 0, "⬆️ Dos": 0,
+                      "↙️ Côté (D)": 0, "↘️ Côté (G)": 0, "—": 0}
+    for cp in valides:
+        effet = cp.get("effet", "—")
+        compteur_effet[effet] = compteur_effet.get(effet, 0) + 1
+
+    total_v = len(valides)
+    pct_face  = round(compteur_effet["⬇️ Face"]    / total_v * 100)
+    pct_dos   = round(compteur_effet["⬆️ Dos"]     / total_v * 100)
+    pct_cote  = round((compteur_effet["↙️ Côté (D)"] +
+                       compteur_effet["↘️ Côté (G)"]) / total_v * 100)
+
+    # Segments avec vent de face (km consécutifs)
+    segments_face = []
+    en_face = False
+    debut_face = None
+    for cp in valides:
+        if cp.get("effet") == "⬇️ Face":
+            if not en_face:
+                en_face    = True
+                debut_face = cp["Km"]
+        else:
+            if en_face:
+                segments_face.append((debut_face, cp["Km"]))
+                en_face = False
+    if en_face:
+        segments_face.append((debut_face, valides[-1]["Km"]))
+
+    return {
+        "pct_pluie":       round(pct_pluie),
+        "premier_pluie":   premier_pluie,
+        "pct_face":        pct_face,
+        "pct_dos":         pct_dos,
+        "pct_cote":        pct_cote,
+        "segments_face":   segments_face,
+        "n_valides":       total_v,
+    }
+
+
+def generer_resume_gemini(gemini_key, score, ascensions, resultats,
+                          dist_tot, d_plus, temps_s, vitesse, analyse):
+    """
+    Génère un résumé textuel de la sortie via Gemini 1.5 Flash.
+    Retourne le texte ou None en cas d'erreur.
+    """
+    if not gemini_key:
+        return None
+
+    import requests as req
+
+    dh = int(temps_s // 3600); dm = int((temps_s % 3600) // 60)
+    valides = [cp for cp in resultats if cp.get("temp_val") is not None]
+    temp_moy = round(sum(cp["temp_val"] for cp in valides) / len(valides), 1) if valides else "?"
+    pluie_moy = round(sum(cp.get("pluie_pct") or 0 for cp in valides) / len(valides)) if valides else 0
+
+    cols_str = ""
+    if ascensions:
+        cols_str = ", ".join(
+            f"{a.get('Nom','') or a['Catégorie']} ({a['Longueur']}, {a['Dénivelé']}, {a['Pente moy.']})"
+            for a in ascensions[:5]
+        )
+
+    analyse_str = ""
+    if analyse:
+        analyse_str = (
+            f"Vent de face {analyse['pct_face']}% du temps, "
+            f"vent de dos {analyse['pct_dos']}%, "
+            f"côté {analyse['pct_cote']}%. "
+            f"Risque de pluie > 50% sur {analyse['pct_pluie']}% du parcours."
+        )
+
+    prompt = f"""Tu es un coach cycliste. Génère un résumé concis et encourageant en français 
+de cette sortie vélo (3-4 phrases max, ton naturel et sportif) :
+
+- Distance : {round(dist_tot/1000, 1)} km
+- Dénivelé positif : {int(d_plus)} m  
+- Durée estimée : {dh}h{dm:02d}
+- Vitesse moyenne : {vitesse} km/h
+- Score conditions : {score['total']}/10 ({score['label']})
+- Température moyenne : {temp_moy}°C
+- Risque de pluie moyen : {pluie_moy}%
+- Ascensions : {cols_str if cols_str else 'aucune difficulté catégorisée'}
+- Vent : {analyse_str}
+
+Pas de liste, pas de titre, juste un paragraphe fluide."""
+
+    try:
+        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+               f"gemini-1.5-flash:generateContent?key={gemini_key}")
+        body = {"contents": [{"parts": [{"text": prompt}]}]}
+        r = req.post(url, json=body, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        logger.warning(f"Gemini : {e}")
+        return None
+
+
 def calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids):
     """
     Score /10 = Météo (6pts) + Parcours (4pts)
@@ -725,6 +847,19 @@ def main():
                 "⚠️ Les serveurs Overpass sont souvent surchargés ou bloqués "
                 "sur Streamlit Cloud. La recherche peut échouer ou être lente."
             )
+        gemini_key = st.text_input(
+            "🤖 Clé API Gemini",
+            value="",
+            type="password",
+            help="Optionnel. Génère un résumé intelligent de ta sortie. "
+                 "Clé gratuite sur aistudio.google.com."
+        )
+        gemini_key = st.text_input(
+            "🤖 Clé API Gemini",
+            value="", type="password",
+            help="Optionnel. Génère un résumé intelligent de ta sortie. "
+                 "Clé gratuite sur aistudio.google.com."
+        )
 
     ph_fuseau = st.sidebar.empty()
     ph_fuseau.info("🌍 Fuseau : en attente…")
@@ -860,6 +995,19 @@ def main():
     score    = calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids)
     calories = calculer_calories(max(1, poids - 10), temps_s, dist_tot, d_plus, vitesse)
 
+    # Analyse météo détaillée
+    analyse_meteo = analyser_meteo_detaillee(resultats, dist_tot)
+
+    # Résumé Gemini (si clé fournie)
+    resume_gemini = None
+    if gemini_key:
+        with etapes.container():
+            with st.spinner("🤖 Génération du résumé Gemini…"):
+                resume_gemini = generer_resume_gemini(
+                    gemini_key, score, ascensions, resultats,
+                    dist_tot, d_plus, temps_s, vitesse, analyse_meteo
+                )
+
     for asc in ascensions:
         temps_jusqu_debut = (asc["_debut_km"] / vitesse) * 3600
         mins_col, vit_col = estimer_temps_col(
@@ -920,8 +1068,8 @@ def main():
     </div>""", unsafe_allow_html=True)
 
     # ── ONGLETS ───────────────────────────────────────────────────────────────
-    tab_carte, tab_profil, tab_meteo, tab_cols, tab_detail = st.tabs([
-        "🗺️ Carte", "⛰️ Profil & Cols", "🌤️ Météo", "🏔️ Ascensions", "📋 Détail"
+    tab_carte, tab_profil, tab_meteo, tab_cols, tab_detail, tab_analyse = st.tabs([
+        "🗺️ Carte", "⛰️ Profil & Cols", "🌤️ Météo", "🏔️ Ascensions", "📋 Détail", "🤖 Analyse"
     ])
 
     with tab_carte:
@@ -1087,6 +1235,87 @@ def main():
                 "Direction":   st.column_config.TextColumn("🧭 Direction"),
                 "Effet vent":  st.column_config.TextColumn("🚴 Effet"),
             })
+
+    # ── ANALYSE ──────────────────────────────────────────────────────────────
+    with tab_analyse:
+
+        # Résumé Gemini
+        if resume_gemini:
+            st.markdown(f"""
+            <div style="background:linear-gradient(135deg,#1e3a5f,#1e40af);
+                        border-radius:12px;padding:20px 24px;color:white;margin-bottom:16px">
+                <div style="font-size:.8rem;opacity:.7;margin-bottom:8px">🤖 Résumé généré par Gemini</div>
+                <div style="font-size:1.05rem;line-height:1.6">{resume_gemini}</div>
+            </div>""", unsafe_allow_html=True)
+        elif gemini_key:
+            st.warning("⚠️ Gemini indisponible — vérifiez votre clé API.")
+        else:
+            st.info("💡 Ajoutez une clé API Gemini dans les options avancées pour générer un résumé intelligent de votre sortie.")
+
+        # Analyse météo détaillée
+        if analyse_meteo:
+            st.subheader("🌤️ Analyse météo détaillée")
+
+            c1, c2 = st.columns(2)
+
+            # ── Vent ─────────────────────────────────────────────────────────
+            with c1:
+                st.markdown("**💨 Répartition du vent**")
+                pf  = analyse_meteo["pct_face"]
+                pd_ = analyse_meteo["pct_dos"]
+                pc  = analyse_meteo["pct_cote"]
+
+                # Barre visuelle
+                def barre(pct, couleur, label, emoji):
+                    st.markdown(f"""
+                    <div style="margin-bottom:8px">
+                        <div style="display:flex;justify-content:space-between;
+                                    font-size:.85rem;margin-bottom:3px">
+                            <span>{emoji} {label}</span>
+                            <span style="font-weight:700">{pct}%</span>
+                        </div>
+                        <div style="background:#e2e8f0;border-radius:4px;height:8px">
+                            <div style="background:{couleur};width:{pct}%;
+                                        height:8px;border-radius:4px"></div>
+                        </div>
+                    </div>""", unsafe_allow_html=True)
+
+                barre(pf,  "#ef4444", "Face",  "⬇️")
+                barre(pc,  "#eab308", "Côté",  "↔️")
+                barre(pd_, "#22c55e", "Dos",   "⬆️")
+
+                if analyse_meteo["segments_face"]:
+                    st.caption("Segments avec vent de face :")
+                    for d, f in analyse_meteo["segments_face"]:
+                        st.caption(f"  • Km {d:.0f} → {f:.0f} ({f-d:.0f} km)")
+
+            # ── Pluie ─────────────────────────────────────────────────────────
+            with c2:
+                st.markdown("**🌧️ Risque de pluie**")
+                pp = analyse_meteo["pct_pluie"]
+
+                couleur_pp = "#ef4444" if pp > 60 else "#f97316" if pp > 30 else "#22c55e"
+                st.markdown(f"""
+                <div style="text-align:center;padding:16px;background:#f8fafc;
+                            border-radius:10px;margin-bottom:12px">
+                    <div style="font-size:2.5rem;font-weight:900;color:{couleur_pp}">{pp}%</div>
+                    <div style="font-size:.85rem;color:#64748b">du parcours avec risque > 50%</div>
+                </div>""", unsafe_allow_html=True)
+
+                if analyse_meteo["premier_pluie"]:
+                    cp_p = analyse_meteo["premier_pluie"]
+                    st.markdown(f"""
+                    <div style="background:#fef3c7;border-radius:8px;padding:10px 14px;font-size:.85rem">
+                        🕐 Premier risque à <b>{cp_p['Heure']}</b> — Km {cp_p['Km']}<br>
+                        Probabilité : <b>{cp_p.get('pluie_pct','?')}%</b>
+                    </div>""", unsafe_allow_html=True)
+                else:
+                    st.markdown("""
+                    <div style="background:#dcfce7;border-radius:8px;padding:10px 14px;font-size:.85rem">
+                        ✅ Aucun risque de pluie significatif sur le parcours
+                    </div>""", unsafe_allow_html=True)
+        else:
+            st.info("📡 Données météo indisponibles pour l'analyse.")
 
 
 if __name__ == "__main__":
