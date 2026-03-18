@@ -1,9 +1,9 @@
 """
 overpass.py
 ===========
-Détection des cols avec la technique de "l'entonnoir" (BBox + Sniper).
-Ultra-rapide : filtre d'abord la zone, puis applique la recherche radiale
-uniquement sur le sous-ensemble de résultats.
+Détection des cols (Méthode BBox simplifiée + User-Agent).
+On demande tous les points de la zone d'un coup (très léger grâce au filtre ["name"]),
+et on calcule les distances de 500m en local via Python (instantané).
 """
 
 import streamlit as st
@@ -17,13 +17,12 @@ logger = logging.getLogger(__name__)
 OVERPASS_URLS = [
     "https://overpass-api.de/api/interpreter",
     "https://lz4.overpass-api.de/api/interpreter",
-    "https://z.overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter"
+    "https://z.overpass-api.de/api/interpreter"
 ]
 
 RAYON_SOMMET_M  = 500    
 TIMEOUT_S       = 25     
-MAX_RETRIES     = 4      
+MAX_RETRIES     = 3      
 
 
 def _haversine(lat1, lon1, lat2, lon2) -> float:
@@ -56,7 +55,6 @@ def enrichir_cols(ascensions: list, points_gpx: list) -> list:
     if not ascensions or not points_gpx:
         return ascensions
 
-    # 1. On récupère les coordonnées exactes de nos sommets GPX
     coords_sommets = []
     for asc in ascensions:
         coords = _point_au_km(points_gpx, asc["_sommet_km"])
@@ -69,43 +67,39 @@ def enrichir_cols(ascensions: list, points_gpx: list) -> list:
     if not coords_sommets:
         return ascensions
 
-    # 2. Calcul de la Bounding Box pour limiter la recherche initiale
+    # 1. Bounding Box large englobant le parcours
     lats = [p.latitude for p in points_gpx]
     lons = [p.longitude for p in points_gpx]
     min_lat, max_lat = min(lats) - 0.05, max(lats) + 0.05
     min_lon, max_lon = min(lons) - 0.05, max(lons) + 0.05
 
-    # 3. On prépare les filtres circulaires (le Sniper)
-    around_filters = ""
-    for _, lat, lon in coords_sommets:
-        around_filters += f"  node.allpois(around:{RAYON_SOMMET_M},{lat:.5f},{lon:.5f});\n"
-
-    # 4. La requête "Entonnoir"
+    # 2. Requête ultra-simple : "Donne-moi les cols et pics nommés du rectangle"
     query = f"""
     [out:json][timeout:{TIMEOUT_S}][bbox:{min_lat:.5f},{min_lon:.5f},{max_lat:.5f},{max_lon:.5f}];
-    // ÉTAPE 1 : Trouver tous les cols/pics nommés de la région et les stocker dans .allpois
     (
       node["mountain_pass"="yes"];
       node["natural"="saddle"];
       node["natural"="peak"]["name"];
-    )->.allpois;
-    // ÉTAPE 2 : Ne garder que ceux qui sont à 500m de nos sommets GPX
-    (
-{around_filters}
     );
     out body;
     """
 
+    # LE PASSE-DROIT : On se fait passer pour un vrai navigateur / une vraie application
+    headers = {
+        "User-Agent": "VeloMeteoApp/6.0 (Contact: cycliste@example.com) Streamlit",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
     osm_nodes = []
     succes_api = False
     
-    # Exécution avec Load Balancing (rotation des serveurs)
+    # 3. Interrogation d'Overpass
     for tentative in range(MAX_RETRIES):
         serveur_actuel = OVERPASS_URLS[tentative % len(OVERPASS_URLS)]
         try:
-            r = requests.post(serveur_actuel, data={"data": query}, timeout=TIMEOUT_S + 5)
+            r = requests.post(serveur_actuel, data={"data": query}, headers=headers, timeout=TIMEOUT_S)
             
-            if r.status_code in [429, 504, 503]:
+            if r.status_code in [429, 503, 504]:
                 raise Exception(f"Serveur surchargé (Code {r.status_code})")
                 
             r.raise_for_status()
@@ -128,18 +122,17 @@ def enrichir_cols(ascensions: list, points_gpx: list) -> list:
                 })
             
             succes_api = True
-            break  
+            break  # Succès immédiat, on sort de la boucle
             
         except Exception as e:
             logger.warning(f"Tentative {tentative + 1} échouée sur {serveur_actuel} : {e}")
             if tentative < MAX_RETRIES - 1:
-                attente = (tentative + 1) * 2
-                time.sleep(attente)
+                time.sleep(2)
 
     if not succes_api:
         st.toast("⚠️ OSM instable : noms des cols potentiellement manquants.")
 
-    # 5. Association du résultat à notre liste d'ascensions
+    # 4. Association mathématique rapide en local (Python)
     for asc, lat, lon in coords_sommets:
         meilleur_noeud = None
         meilleure_dist = RAYON_SOMMET_M
