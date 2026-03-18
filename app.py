@@ -450,13 +450,65 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
                 f" {vv} km/h", sticky=True),
             icon=folium.Icon(color="blue", icon="info-sign")).add_to(fg_meteo)
 
-    # 5. On ajoute les calques à la carte
-    fg_trace.add_to(carte)
-    fg_cols.add_to(carte)
+    # 5. Ordre : Météo en premier dans la légende, puis Ascensions, puis Parcours
     fg_meteo.add_to(carte)
+    fg_cols.add_to(carte)
+    fg_trace.add_to(carte)
 
-    # 6. Contrôleur de calques
-    folium.LayerControl(collapsed=False, position="topright").add_to(carte)
+    # 6. Légende custom — remplace le LayerControl par défaut
+    legende_html = """
+    <div id="custom-legend" style="
+        position: fixed;
+        top: 12px; right: 12px;
+        background: white;
+        border-radius: 10px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+        padding: 10px 14px;
+        font-family: Arial, sans-serif;
+        font-size: 13px;
+        color: #1e293b;
+        z-index: 1000;
+        min-width: 160px;
+    ">
+        <div style="font-weight:700; font-size:12px; color:#64748b;
+                    letter-spacing:.5px; margin-bottom:8px; text-transform:uppercase;">
+            🗺️ Calques
+        </div>
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-bottom:6px;">
+            <input type="checkbox" id="cb-meteo" checked
+                onchange="toggleLayer('🌤️ Météo', this.checked)"
+                style="width:15px; height:15px; cursor:pointer; accent-color:#2563eb;">
+            <span>🌤️ Météo</span>
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-bottom:6px;">
+            <input type="checkbox" id="cb-cols" checked
+                onchange="toggleLayer('🏔️ Ascensions', this.checked)"
+                style="width:15px; height:15px; cursor:pointer; accent-color:#2563eb;">
+            <span>🏔️ Ascensions</span>
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+            <input type="checkbox" id="cb-trace" checked
+                onchange="toggleLayer('📍 Parcours', this.checked)"
+                style="width:15px; height:15px; cursor:pointer; accent-color:#2563eb;">
+            <span>📍 Parcours</span>
+        </label>
+    </div>
+    <script>
+    function toggleLayer(name, visible) {
+        document.querySelectorAll('.leaflet-pane .leaflet-overlay-pane > *').forEach(function(el) {});
+        // Utilise l'API Leaflet via la carte
+        var map = Object.values(window).find(v => v && v._leaflet_id && v.eachLayer);
+        if (!map) return;
+        map.eachLayer(function(layer) {
+            if (layer.options && layer.options.name === name) {
+                if (visible) { map.addLayer(layer); }
+                else         { map.removeLayer(layer); }
+            }
+        });
+    }
+    </script>
+    """
+    carte.get_root().html.add_child(folium.Element(legende_html))
 
     return carte
 
@@ -536,10 +588,18 @@ def main():
         niv = st.session_state.sensibilite
         st.caption(SENSIBILITE_LABELS[niv])
 
-        # Bouton reset
+        # Bouton reset — utilise un flag pour réinitialiser au prochain run
         if st.button("↺ Réinitialiser", use_container_width=True):
-            for k in ["sensibilite", "seuil_debut", "seuil_fin", "fusion_m", "_last_sensibilite"]:
-                st.session_state.pop(k, None)
+            st.session_state["_reset_demande"] = True
+            st.rerun()
+
+        # Appliquer le reset au début du run suivant
+        if st.session_state.pop("_reset_demande", False):
+            st.session_state.pop("sensibilite", None)
+            st.session_state.pop("seuil_debut", None)
+            st.session_state.pop("seuil_fin", None)
+            st.session_state.pop("fusion_m", None)
+            st.session_state.pop("_last_sensibilite", None)
             st.rerun()
 
         # ── Réglages fins ─────────────────────────────────────────────────────
