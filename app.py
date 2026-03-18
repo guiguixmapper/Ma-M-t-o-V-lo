@@ -130,7 +130,7 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
 <h1>🚴‍♂️ Résumé de sortie vélo</h1>
 <p>Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')} · Départ : {heure_depart.strftime('%d/%m/%Y %H:%M')}</p>
 <div class="score">{score['label']} — {score['total']}/10 &nbsp;|&nbsp;
-  🌤️ {score['score_meteo']}/4 &nbsp;|&nbsp; ⛰️ {score['score_cols']}/3 &nbsp;|&nbsp; ⚡ {score['score_effort']}/3</div>
+  🌤️ {score['score_meteo']}/6 &nbsp;|&nbsp; 🏔️ {score['score_cols']}/4 &nbsp;|&nbsp; ⚡ {score['score_effort']}/2</div>
 <div class="grid">
   <div class="card"><div class="v">{round(dist_tot/1000,1)} km</div><div class="l">📏 Distance</div></div>
   <div class="card"><div class="v">{int(d_plus)} m</div><div class="l">⬆️ D+</div></div>
@@ -156,35 +156,106 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
 # ==============================================================================
 
 def calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids):
+    """
+    Score /10 = Météo (6pts) + Parcours (4pts)
+
+    Météo (6pts) — cœur du score, conditions extérieures :
+        - Température (2pts)
+        - Vent effectif (2pts)
+        - Pluie (2pts)
+
+    Parcours (4pts) — informatif, jamais punitif (plancher à 2/4) :
+        - Distance + Dénivelé (2pts) : toujours ≥ 0.5
+        - Effort estimé (2pts) : basé sur FTP/FC max
+
+    Principe : seule la météo peut vraiment plomber le score.
+    Un parcours difficile par beau temps reste une belle sortie.
+    """
     valides = [cp for cp in resultats if cp.get("temp_val") is not None]
-    sm = 4.0
+
+    # ── MÉTÉO (6 pts) ─────────────────────────────────────────────────────────
     if valides:
+        # Température (2pts)
         tm = sum(cp["temp_val"] for cp in valides) / len(valides)
-        sm -= (0 if 15<=tm<=22 else 0.5 if 10<=tm<=28 else 1.5 if 5<=tm<=32 else 2.5)
-        POIDS_EFFET = {"⬇️ Face":1.5,"↘️ Côté (D)":0.7,"↙️ Côté (G)":0.7,"⬆️ Dos":-0.3,"—":0.5}
-        ve_moy = sum((cp.get("vent_val") or 0) * POIDS_EFFET.get(cp.get("effet","—"), 0.5)
-                     for cp in valides) / len(valides)
-        sm -= (2.0 if ve_moy>45 else 1.5 if ve_moy>30 else 1.0 if ve_moy>18 else 0.5 if ve_moy>10 else 0)
+        if   15 <= tm <= 22: s_temp = 2.0
+        elif 10 <= tm <= 27: s_temp = 1.5
+        elif  5 <= tm <= 32: s_temp = 0.8
+        elif  0 <= tm:       s_temp = 0.3
+        else:                s_temp = 0.0
+
+        # Vent effectif (2pts) — pondéré par direction
+        POIDS_EFFET = {
+            "⬇️ Face":   1.5,   # vent de face = plein malus
+            "↙️ Côté (D)": 0.7,
+            "↘️ Côté (G)": 0.7,
+            "⬆️ Dos":    -0.3,  # vent de dos = léger bonus
+            "—":          0.5,
+        }
+        ve_moy = sum(
+            (cp.get("vent_val") or 0) * POIDS_EFFET.get(cp.get("effet", "—"), 0.5)
+            for cp in valides
+        ) / len(valides)
+        if   ve_moy <= 8:  s_vent = 2.0
+        elif ve_moy <= 18: s_vent = 1.5
+        elif ve_moy <= 30: s_vent = 0.8
+        elif ve_moy <= 45: s_vent = 0.3
+        else:              s_vent = 0.0
+
+        # Pluie (2pts) — linéaire
         pm = sum(cp.get("pluie_pct") or 0 for cp in valides) / len(valides)
-        sm -= (1.5 if pm>70 else 1.0 if pm>40 else 0.3 if pm>20 else 0)
+        s_pluie = round(max(0.0, 2.0 * (1 - pm / 100)), 2)
+
+        sm = s_temp + s_vent + s_pluie
     else:
-        sm = 2.0
-    sc = (3.0 if d_plus<200 else 2.5 if d_plus<500 else 2.0 if d_plus<1000
-          else 1.2 if d_plus<2000 else 0.6 if d_plus<3500 else 0.2)
-    cats = [a["Catégorie"] for a in ascensions]
-    sc = max(0.0, sc - (cats.count("🔴 HC")*1.0 + cats.count("🟠 1ère Cat.")*0.6
-                        + cats.count("🟡 2ème Cat.")*0.3 + cats.count("🟢 3ème Cat.")*0.1))
-    se = 3.0
+        sm = 3.0   # météo inconnue → score neutre
+
+    # ── PARCOURS (4 pts, plancher 2/4) ────────────────────────────────────────
+
+    # Distance + Dénivelé (2pts) — informatif, jamais punitif
+    dist_km = sum(cp.get("Km", 0) for cp in resultats[-1:])  # dernier checkpoint = distance totale
+    # Distance : 0.5 à 1pt
+    if   dist_km < 30:  s_dist = 0.5
+    elif dist_km < 80:  s_dist = 0.7
+    elif dist_km < 150: s_dist = 0.9
+    else:               s_dist = 1.0
+    # Dénivelé : 0.5 à 1pt
+    if   d_plus < 300:  s_dplus = 0.5
+    elif d_plus < 1000: s_dplus = 0.7
+    elif d_plus < 2500: s_dplus = 0.9
+    else:               s_dplus = 1.0
+
+    s_parcours = s_dist + s_dplus   # 1.0 à 2.0
+
+    # Effort estimé (2pts) — basé sur puissance moyenne dans les cols
     if ascensions and ref_val > 0:
         wm  = sum(estimer_watts(a["_pente_moy"], vitesse, poids) for a in ascensions) / len(ascensions)
         pct = wm / ref_val if mode == "⚡ Puissance" else 0.85
-        se  = (0.3 if pct>1.15 else 0.8 if pct>1.05 else 1.3 if pct>0.90
-               else 2.0 if pct>0.70 else 2.5 if pct>0.50 else 3.0)
-    total = round(min(10.0, max(0.0, sm + sc + se)), 1)
-    lbl   = ("🔴 Très difficile" if total<4 else "🟠 Difficile" if total<6
-             else "🟡 Engagée" if total<7.5 else "🟢 Bonne sortie" if total<9 else "⭐ Idéale")
-    return {"total":total, "label":lbl,
-            "score_meteo":round(max(0.0,sm),1), "score_cols":round(sc,1), "score_effort":round(se,1)}
+        # Effort modéré = idéal (ni trop facile ni trop dur)
+        if   pct <= 0.50: s_effort = 0.8   # trop facile
+        elif pct <= 0.70: s_effort = 1.2
+        elif pct <= 0.90: s_effort = 2.0   # zone idéale
+        elif pct <= 1.05: s_effort = 1.5
+        else:             s_effort = 0.8   # trop dur
+    else:
+        s_effort = 1.0   # pas de cols → effort neutre
+
+    sc = max(2.0, s_parcours + s_effort)   # plancher 2/4
+
+    # ── TOTAL ─────────────────────────────────────────────────────────────────
+    total = round(min(10.0, max(0.0, sm + sc)), 1)
+    lbl   = ("🔴 Déconseillé"       if total < 3.5 else
+             "🟠 Conditions difficiles" if total < 5.0 else
+             "🟡 Conditions correctes"  if total < 6.5 else
+             "🟢 Bonne sortie"          if total < 8.0 else
+             "⭐ Conditions idéales")
+
+    return {
+        "total":        total,
+        "label":        lbl,
+        "score_meteo":  round(max(0.0, sm), 1),
+        "score_cols":   round(sc, 1),
+        "score_effort": round(s_effort, 1),
+    }
 
 
 # ==============================================================================
@@ -791,9 +862,9 @@ def main():
         <div style="font-size:2.8rem;font-weight:900;line-height:1">{score['total']}<span style="font-size:1.2rem">/10</span></div>
         <div style="font-size:.95rem;font-weight:600;margin-top:2px">{score['label']}</div>
         <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
-          <span style="background:rgba(255,255,255,.2);border-radius:20px;padding:3px 10px;font-size:.75rem">🌤️ {score['score_meteo']}/4</span>
-          <span style="background:rgba(255,255,255,.2);border-radius:20px;padding:3px 10px;font-size:.75rem">⛰️ {score['score_cols']}/3</span>
-          <span style="background:rgba(255,255,255,.2);border-radius:20px;padding:3px 10px;font-size:.75rem">⚡ {score['score_effort']}/3</span>
+          <span style="background:rgba(255,255,255,.2);border-radius:20px;padding:3px 10px;font-size:.75rem">🌤️ {score['score_meteo']}/6</span>
+          <span style="background:rgba(255,255,255,.2);border-radius:20px;padding:3px 10px;font-size:.75rem">🏔️ {score['score_cols']}/4</span>
+          <span style="background:rgba(255,255,255,.2);border-radius:20px;padding:3px 10px;font-size:.75rem">⚡ {score['score_effort']}/2</span>
         </div>
       </div>
       <div style="display:flex;gap:0;flex:1;flex-wrap:wrap;padding-left:8px">
