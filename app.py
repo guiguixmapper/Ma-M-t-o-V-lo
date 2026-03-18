@@ -1163,7 +1163,12 @@ def main():
         if not gemini_key:
             st.info("👈 **Pour activer le coach virtuel**, entrez votre clé API Gemini dans le menu '🔧 Options avancées' situé dans la barre latérale gauche.")
         else:
-            if st.button("💬 Générer le briefing d'avant-course", use_container_width=True):
+            # 1. On crée le "tiroir" de mémoire s'il n'existe pas encore
+            if "briefing_ia" not in st.session_state:
+                st.session_state.briefing_ia = None
+
+            # 2. Le bouton pour appeler Gemini (uniquement quand on clique)
+            if st.button("💬 Générer ou Actualiser le briefing", use_container_width=True):
                 with st.spinner("Le Directeur Sportif analyse vos données (météo, vent, cols)..."):
                     try:
                         briefing = generer_briefing(
@@ -1175,14 +1180,19 @@ def main():
                             analyse_meteo=analyse_meteo
                         )
                         if briefing:
-                            st.success("✅ Briefing généré avec succès !")
-                            st.markdown(f"""
-                            <div style="background-color:#f8fafc; padding:25px; border-radius:12px; border-left:6px solid #2563eb; color:#1e293b; font-size:1.05rem; line-height:1.6; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                                {briefing}
-                            </div>
-                            """, unsafe_allow_html=True)
+                            # On sauvegarde le résultat dans la mémoire !
+                            st.session_state.briefing_ia = briefing
                     except Exception as e:
-                        st.error(f"❌ Erreur lors de la communication avec l'API Gemini. Vérifiez votre clé API. (Détail: {e})")
+                        st.error(f"❌ Erreur lors de la communication avec l'API Gemini. (Détail: {e})")
+
+            # 3. L'affichage permanent (il reste affiché même si on touche aux autres menus)
+            if st.session_state.briefing_ia:
+                st.success("✅ Briefing prêt !")
+                st.markdown(f"""
+                <div style="background-color:#f8fafc; padding:25px; border-radius:12px; border-left:6px solid #2563eb; color:#1e293b; font-size:1.05rem; line-height:1.6; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+                    {st.session_state.briefing_ia}
+                </div>
+                """, unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
