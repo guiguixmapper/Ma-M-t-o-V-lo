@@ -2,19 +2,29 @@
 overpass.py
 ===========
 Détection des cols optimisée via une requête ciblée ("Sniper").
-On interroge OSM uniquement dans un rayon de 500m autour des sommets détectés.
+Inclut une rotation de serveurs miroirs (Load Balancing) et un backoff exponentiel
+pour esquiver les erreurs 504 (Timeout) et 429 (Too Many Requests).
 """
 
 import streamlit as st
 import requests
 import logging
 import math
+import time
 
 logger = logging.getLogger(__name__)
 
-OVERPASS_URL    = "https://overpass-api.de/api/interpreter"
-RAYON_SOMMET_M  = 500    # m — rayon de recherche local autour du point GPS
+# NOUVEAU : Liste des serveurs officiels et miroirs
+OVERPASS_URLS = [
+    "https://overpass-api.de/api/interpreter",        # Serveur principal
+    "https://lz4.overpass-api.de/api/interpreter",    # Serveur miroir 1
+    "https://z.overpass-api.de/api/interpreter",      # Serveur miroir 2
+    "https://overpass.kumi.systems/api/interpreter"   # Serveur miroir alternatif
+]
+
+RAYON_SOMMET_M  = 500    
 TIMEOUT_S       = 25     
+MAX_RETRIES     = 4      # On a 4 serveurs, on tente 4 fois maximum
 
 
 def _haversine(lat1, lon1, lat2, lon2) -> float:
@@ -48,7 +58,6 @@ def enrichir_cols(ascensions: list, points_gpx: list) -> list:
     if not ascensions or not points_gpx:
         return ascensions
 
-    # 1. On récupère les coordonnées exactes de nos sommets GPX
     coords_sommets = []
     for asc in ascensions:
         coords = _point_au_km(points_gpx, asc["_sommet_km"])
@@ -61,10 +70,8 @@ def enrichir_cols(ascensions: list, points_gpx: list) -> list:
     if not coords_sommets:
         return ascensions
 
-    # 2. On construit une requête ciblant UNIQUEMENT ces points précis (Méthode Sniper)
     query_parts = []
     for _, lat, lon in coords_sommets:
-        # Pour chaque sommet, on cherche les cols et les pics nommés à moins de 500m
         query_parts.append(f'node["mountain_pass"="yes"](around:{RAYON_SOMMET_M},{lat:.5f},{lon:.5f});')
         query_parts.append(f'node["natural"="saddle"](around:{RAYON_SOMMET_M},{lat:.5f},{lon:.5f});')
         query_parts.append(f'node["natural"="peak"]["name"](around:{RAYON_SOMMET_M},{lat:.5f},{lon:.5f});')
@@ -79,34 +86,52 @@ def enrichir_cols(ascensions: list, points_gpx: list) -> list:
     out body;
     """
 
-    # 3. Interrogation d'Overpass en 1 seule requête ultralégère
     osm_nodes = []
-    try:
-        r = requests.post(OVERPASS_URL, data={"data": query}, timeout=TIMEOUT_S + 5)
-        r.raise_for_status()
-        elements = r.json().get("elements", [])
+    succes_api = False
+    
+    # NOUVEAU : La boucle magique de rotation des serveurs
+    for tentative in range(MAX_RETRIES):
+        serveur_actuel = OVERPASS_URLS[tentative % len(OVERPASS_URLS)]
         
-        for el in elements:
-            tags = el.get("tags", {})
-            nom = tags.get("name:fr") or tags.get("name") or tags.get("name:en")
-            if not nom:
-                continue
-            alt_tag = tags.get("ele")
-            try:    alt = int(float(alt_tag)) if alt_tag else None
-            except: alt = None
+        try:
+            r = requests.post(serveur_actuel, data={"data": query}, timeout=TIMEOUT_S + 5)
             
-            osm_nodes.append({
-                "nom": nom,
-                "alt": alt,
-                "lat": el["lat"],
-                "lon": el["lon"],
-            })
+            # On attrape spécifiquement les erreurs de surcharge
+            if r.status_code in [429, 504, 503]:
+                raise Exception(f"Serveur surchargé (Code {r.status_code})")
+                
+            r.raise_for_status()
+            elements = r.json().get("elements", [])
             
-    except Exception as e:
-        logger.warning(f"Overpass ciblée échouée : {e}")
-        st.toast("⚠️ Impossible de récupérer les noms des cols. Serveur OSM indisponible.")
+            for el in elements:
+                tags = el.get("tags", {})
+                nom = tags.get("name:fr") or tags.get("name") or tags.get("name:en")
+                if not nom:
+                    continue
+                alt_tag = tags.get("ele")
+                try:    alt = int(float(alt_tag)) if alt_tag else None
+                except: alt = None
+                
+                osm_nodes.append({
+                    "nom": nom,
+                    "alt": alt,
+                    "lat": el["lat"],
+                    "lon": el["lon"],
+                })
+            
+            succes_api = True
+            break  # Victoire ! On sort de la boucle.
+            
+        except Exception as e:
+            logger.warning(f"Tentative {tentative + 1} échouée sur {serveur_actuel} : {e}")
+            if tentative < MAX_RETRIES - 1:
+                # On attend de plus en plus longtemps pour se faire pardonner (3s, puis 6s, puis 9s)
+                attente = (tentative + 1) * 3
+                time.sleep(attente)
 
-    # 4. Association du résultat OSM à notre liste d'ascensions
+    if not succes_api:
+        st.toast("⚠️ Tous les serveurs OpenStreetMap sont saturés actuellement. Les noms des cols seront absents.")
+
     for asc, lat, lon in coords_sommets:
         meilleur_noeud = None
         meilleure_dist = RAYON_SOMMET_M
