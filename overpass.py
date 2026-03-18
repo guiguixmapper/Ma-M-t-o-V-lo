@@ -1,127 +1,118 @@
 """
-overpass.py
-===========
-Détection des cols optimisée via une requête ciblée ("Sniper").
-On interroge OSM uniquement dans un rayon de 500m autour des sommets détectés.
+elevation.py
+============
+Correction du profil altimétrique au choix : OpenRouteService (ORS) ou Open-Elevation (SRTM).
 """
 
 import streamlit as st
 import requests
 import logging
-import math
 
 logger = logging.getLogger(__name__)
 
-OVERPASS_URL    = "https://overpass-api.de/api/interpreter"
-RAYON_SOMMET_M  = 500    # m — rayon de recherche local autour du point GPS
-TIMEOUT_S       = 25     
+OPEN_ELEVATION_URL = "https://api.open-elevation.com/api/v1/lookup"
+ORS_ELEVATION_URL  = "https://api.openrouteservice.org/elevation/line"
+BATCH_SIZE         = 100   # points par requête (Open-Elevation)
+MAX_POINTS         = 2000  # limite de points par requête (ORS)
 
 
-def _haversine(lat1, lon1, lat2, lon2) -> float:
-    """Distance en mètres entre deux points GPS."""
-    R    = 6371000
-    φ1, φ2 = math.radians(lat1), math.radians(lat2)
-    dφ   = math.radians(lat2 - lat1)
-    dλ   = math.radians(lon2 - lon1)
-    a    = math.sin(dφ/2)**2 + math.cos(φ1)*math.cos(φ2)*math.sin(dλ/2)**2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def _point_au_km(points_gpx, km_cible) -> tuple | None:
-    if not points_gpx:
-        return None
-    dist_cum = 0.0
-    best_pt  = points_gpx[0]
-    best_diff = abs(dist_cum/1000 - km_cible)
-    for i in range(1, len(points_gpx)):
-        p1, p2 = points_gpx[i-1], points_gpx[i]
-        d = p1.distance_2d(p2) or 0.0
-        dist_cum += d
-        diff = abs(dist_cum/1000 - km_cible)
-        if diff < best_diff:
-            best_diff = diff
-            best_pt   = p2
-    return best_pt.latitude, best_pt.longitude
-
-
-def enrichir_cols(ascensions: list, points_gpx: list) -> list:
-    if not ascensions or not points_gpx:
-        return ascensions
-
-    # 1. On récupère les coordonnées exactes de nos sommets GPX
-    coords_sommets = []
-    for asc in ascensions:
-        coords = _point_au_km(points_gpx, asc["_sommet_km"])
-        if coords:
-            coords_sommets.append((asc, coords[0], coords[1]))
-        else:
-            asc["Nom"] = "—"
-            asc["Nom OSM alt"] = None
-
-    if not coords_sommets:
-        return ascensions
-
-    # 2. On construit une requête ciblant UNIQUEMENT ces points précis (Méthode Sniper)
-    query_parts = []
-    for _, lat, lon in coords_sommets:
-        # Pour chaque sommet, on cherche les cols et les pics nommés à moins de 500m
-        query_parts.append(f'node["mountain_pass"="yes"](around:{RAYON_SOMMET_M},{lat:.5f},{lon:.5f});')
-        query_parts.append(f'node["natural"="saddle"](around:{RAYON_SOMMET_M},{lat:.5f},{lon:.5f});')
-        query_parts.append(f'node["natural"="peak"]["name"](around:{RAYON_SOMMET_M},{lat:.5f},{lon:.5f});')
-
-    query_body = "\n".join(query_parts)
-    
-    query = f"""
-    [out:json][timeout:{TIMEOUT_S}];
-    (
-{query_body}
-    );
-    out body;
-    """
-
-    # 3. Interrogation d'Overpass en 1 seule requête ultralégère
-    osm_nodes = []
+def _requete_ors_line(coords: list, api_key: str) -> list | None:
+    """Envoie un lot de points à ORS. coords = [[lon, lat], [lon, lat]...]"""
     try:
-        r = requests.post(OVERPASS_URL, data={"data": query}, timeout=TIMEOUT_S + 5)
+        headers = {
+            "Authorization": api_key,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "format_in": "polyline",
+            "format_out": "polyline",
+            "geometry": coords
+        }
+        r = requests.post(ORS_ELEVATION_URL, json=payload, headers=headers, timeout=20)
         r.raise_for_status()
-        elements = r.json().get("elements", [])
-        
-        for el in elements:
-            tags = el.get("tags", {})
-            nom = tags.get("name:fr") or tags.get("name") or tags.get("name:en")
-            if not nom:
-                continue
-            alt_tag = tags.get("ele")
-            try:    alt = int(float(alt_tag)) if alt_tag else None
-            except: alt = None
-            
-            osm_nodes.append({
-                "nom": nom,
-                "alt": alt,
-                "lat": el["lat"],
-                "lon": el["lon"],
-            })
-            
+        data = r.json().get("geometry", [])
+        return [pt[2] for pt in data if len(pt) >= 3]
     except Exception as e:
-        logger.warning(f"Overpass ciblée échouée : {e}")
-        st.toast("⚠️ Impossible de récupérer les noms des cols. Serveur OSM indisponible.")
+        logger.warning(f"ORS Elevation échoué : {e}")
+        return None
 
-    # 4. Association du résultat OSM à notre liste d'ascensions
-    for asc, lat, lon in coords_sommets:
-        meilleur_noeud = None
-        meilleure_dist = RAYON_SOMMET_M
 
-        for noeud in osm_nodes:
-            dist = _haversine(lat, lon, noeud["lat"], noeud["lon"])
-            if dist < meilleure_dist:
-                meilleure_dist = dist
-                meilleur_noeud = noeud
+def _requete_batch(locations: list) -> list | None:
+    """Envoie un batch de points à Open-Elevation (SRTM)."""
+    try:
+        r = requests.post(
+            OPEN_ELEVATION_URL,
+            json={"locations": locations},
+            timeout=20,
+        )
+        r.raise_for_status()
+        results = r.json().get("results", [])
+        return [pt.get("elevation") for pt in results]
+    except Exception as e:
+        logger.warning(f"Open-Elevation batch échoué : {e}")
+        return None
 
-        if meilleur_noeud:
-            asc["Nom"] = meilleur_noeud["nom"]
-            asc["Nom OSM alt"] = meilleur_noeud["alt"]
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def corriger_profil(lats_tuple: tuple, lons_tuple: tuple, alts_tuple: tuple, api_key: str = "", methode: str = "srtm") -> tuple:
+    lats = list(lats_tuple)
+    lons = list(lons_tuple)
+    alts = list(alts_tuple)
+    n    = len(lats)
+
+    if n == 0:
+        return alts_tuple
+
+    # Sous-échantillonnage pour éviter les doublons parfaits qui font planter les API
+    indices_echantillon = []
+    last_lon, last_lat = None, None
+    for i in range(0, n, max(1, n // MAX_POINTS)):
+        if lons[i] != last_lon or lats[i] != last_lat:
+            indices_echantillon.append(i)
+            last_lon, last_lat = lons[i], lats[i]
+
+    alts_corrigees_echantillon = []
+
+    # --- MÉTHODE ORS ---
+    if methode == "ors":
+        if not api_key:
+            logger.warning("Clé ORS manquante pour la correction altimétrique.")
+            return alts_tuple
+            
+        coords_ors = [[lons[i], lats[i]] for i in indices_echantillon]
+        res_ors = _requete_ors_line(coords_ors, api_key)
+        if res_ors and len(res_ors) == len(indices_echantillon):
+            alts_corrigees_echantillon = res_ors
         else:
-            asc["Nom"] = "—"
-            asc["Nom OSM alt"] = None
+            logger.warning("Erreur avec ORS Elevation. Conservation des altitudes d'origine.")
+            return alts_tuple
 
-    return ascensions
+    # --- MÉTHODE SRTM ---
+    elif methode == "srtm":
+        locations = [{"latitude": lats[i], "longitude": lons[i]} for i in indices_echantillon]
+        for start in range(0, len(locations), BATCH_SIZE):
+            batch  = locations[start:start + BATCH_SIZE]
+            result = _requete_batch(batch)
+            if result is None:
+                logger.warning("Open-Elevation indisponible — profil GPS conservé.")
+                return alts_tuple
+            alts_corrigees_echantillon.extend(result)
+
+    # Sécurité
+    if len(alts_corrigees_echantillon) != len(indices_echantillon):
+        return alts_tuple
+
+    # Interpolation linéaire pour reconstruire tous les points
+    alts_out = list(alts)
+    for k in range(len(indices_echantillon)):
+        i0  = indices_echantillon[k]
+        i1  = indices_echantillon[k + 1] if k + 1 < len(indices_echantillon) else n
+        a0  = alts_corrigees_echantillon[k]
+        a1  = alts_corrigees_echantillon[k + 1] if k + 1 < len(alts_corrigees_echantillon) else a0
+        if a0 is None or a1 is None:
+            continue
+        for j in range(i0, min(i1, n)):
+            t = (j - i0) / max(1, i1 - i0)
+            alts_out[j] = a0 + t * (a1 - a0)
+
+    return tuple(alts_out)
