@@ -9,6 +9,9 @@ from fpdf import FPDF
 import tempfile
 import os
 import plotly.graph_objects as go
+import logging
+
+logger = logging.getLogger(__name__)
 
 def nettoyer_texte(texte):
     """
@@ -17,7 +20,6 @@ def nettoyer_texte(texte):
     """
     if texte is None: 
         return ""
-    # On force la conversion en string et on retire les caractères hors latin-1 (les emojis)
     return str(texte).encode('latin-1', 'ignore').decode('latin-1')
 
 def creer_figure_col_pdf(df_profil, asc, nb_segments=None):
@@ -115,7 +117,6 @@ def generer_roadbook_pdf(score, ascensions, resultats, df_profil, dist_tot, d_pl
     pdf.set_font('helvetica', '', 9)
     for cp in resultats:
         t = cp.get('temp_val')
-        # ICI on applique nettoyer_texte() PARTOUT pour éviter le crash du drapeau
         pdf.cell(col_widths[0], 8, nettoyer_texte(cp.get('Heure', '-')), border=1, align='C')
         pdf.cell(col_widths[1], 8, nettoyer_texte(cp.get('Km', '-')), border=1, align='C')
         pdf.cell(col_widths[2], 8, nettoyer_texte(cp.get('Ciel', '-')), border=1, align='C')
@@ -140,13 +141,27 @@ def generer_roadbook_pdf(score, ascensions, resultats, df_profil, dist_tot, d_pl
             details = f"Longueur: {asc.get('Longueur', '')} | D+: {asc.get('Dénivelé', '')} | Pente: {asc.get('Pente moy.', '')} moy. / {asc.get('Pente max', '')} max"
             pdf.cell(0, 6, nettoyer_texte(details), new_x="LMARGIN", new_y="NEXT")
             
-            # Génération Image
+            # --- LE PARACHUTE KALEIDO ---
             fig = creer_figure_col_pdf(df_profil, asc, nb_segments=None)
             if fig:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
-                    fig.write_image(tmpfile.name, engine="kaleido")
-                    pdf.image(tmpfile.name, x=10, w=190)
-                os.remove(tmpfile.name) # Nettoyage
+                try:
+                    # On crée le nom de fichier sans le garder ouvert
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
+                        nom_fichier = tmpfile.name
+                    
+                    # On tente de sauvegarder l'image
+                    fig.write_image(nom_fichier, engine="kaleido")
+                    
+                    # On tente de l'insérer dans le PDF
+                    pdf.image(nom_fichier, x=10, w=190)
+                    
+                    # On nettoie
+                    if os.path.exists(nom_fichier):
+                        os.remove(nom_fichier)
+                except Exception as e:
+                    logger.warning(f"Impossible de générer le graphique PDF : {e}")
+                    pdf.set_font('helvetica', 'I', 9)
+                    pdf.cell(0, 6, nettoyer_texte("(Graphique indisponible sur ce serveur)"), new_x="LMARGIN", new_y="NEXT")
             pdf.ln(5)
 
     # --- LE MOT DU COACH (A LA FIN) ---
