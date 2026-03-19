@@ -1,5 +1,5 @@
 """
-🚴‍♂️ Vélo & Météo — V11 (HTML Ultime : Vitesse réelle, Carte, Profils, IA en bas)
+🚴‍♂️ Vélo & Météo — V12 (HTML Ultime + Vitesse Réelle + Mémoire Anti-Crash)
 ================================
 Analyse de tracé GPX : météo en temps réel, cols UCI, profil interactif,
 zones d'entraînement, score de conditions et Coach IA complet.
@@ -68,6 +68,11 @@ from weather import (
 from overpass import enrichir_cols
 from gemini_coach import generer_briefing
 
+# 🛡️ LE BOUCLIER MÉMOIRE EST ICI (Appelé quand on clique sur Exporter)
+@st.cache_data(ttl=1800, show_spinner=False)
+def memoire_meteo(frozen):
+    return recuperer_meteo_batch(frozen)
+
 
 # ==============================================================================
 # UTILITAIRES GPS & HTML
@@ -132,7 +137,6 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
         for asc in ascensions:
             fig_col = creer_figure_col(df_profil, asc)
             if fig_col:
-                # include_plotlyjs=False car le premier script (celui du profil) suffit
                 html_profils_cols += fig_col.to_html(full_html=False, include_plotlyjs=False)
 
     # --- FORMATAGE DU BRIEFING IA ---
@@ -165,7 +169,6 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
   td{{padding:6px 8px;border-bottom:1px solid #e2e8f0}}
   tr:nth-child(even) td{{background:#f8fafc}}
   
-  /* Bouton d'impression */
   .btn-print {{
       background-color: #2563eb; color: white; border: none; padding: 12px 24px;
       font-size: 1.1rem; border-radius: 8px; cursor: pointer; font-weight: bold;
@@ -173,7 +176,6 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
   }}
   .btn-print:hover {{ background-color: #1e40af; }}
   
-  /* Mode impression PDF */
   @media print {{
       .btn-print {{ display: none !important; }}
       body {{ padding: 0; max-width: 100%; }}
@@ -841,7 +843,7 @@ def main():
                     })
                     prochain += intervalle_sec
 
-    # Calcul de la vitesse réelle tenant compte du dénivelé
+    # Calcul de la vitesse moyenne globale (vitesse réelle avec dénivelé)
     if temps_s > 0:
         vit_moy_reelle = round((dist_tot / 1000) / (temps_s / 3600), 1)
     else:
@@ -897,16 +899,18 @@ def main():
         asc.setdefault("Nom", "—")
         asc.setdefault("Nom OSM alt", None)
 
-    # ── MÉTÉO ─────────────────────────────────────────────────────────────────
+    # ── MÉTÉO (AVEC MÉMOIRE LOCALE) ───────────────────────────────────────────
     with etapes.container():
-        with st.spinner("📡 Récupération météo…"):
+        with st.spinner("📡 Récupération météo..."):
             frozen   = tuple((cp["lat"], cp["lon"], cp["Heure_API"]) for cp in checkpoints)
-            rep_list = recuperer_meteo_batch(frozen)
+            # On utilise notre boîte à mémoire locale
+            rep_list = memoire_meteo(frozen)
+                
     etapes.empty()
 
     resultats = []; err_meteo = rep_list is None
     if err_meteo:
-        st.warning("⚠️ Météo indisponible.")
+        st.warning("⚠️ Météo indisponible. Open-Meteo vous a temporairement bloqué (Erreur 429). Patientez 2 minutes.")
         for cp in checkpoints:
             cp.update(Ciel="—", temp_val=None, Pluie="—", pluie_pct=None,
                       vent_val=None, rafales_val=None, Dir="—",
@@ -959,6 +963,11 @@ def main():
           <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">⬆️ D+</div>
         </div>
         <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-right:1px solid rgba(255,255,255,0.2)">
+          <div style="font-size:1.9rem;font-weight:800">{int(d_moins)}</div>
+          <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">m</div>
+          <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">⬇️ D−</div>
+        </div>
+        <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-right:1px solid rgba(255,255,255,0.2)">
           <div style="font-size:1.9rem;font-weight:800">{dh}h{dm:02d}</div>
           <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">min</div>
           <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">⏱️ Durée</div>
@@ -973,7 +982,7 @@ def main():
           <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">&nbsp;</div>
           <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">🏁 Arrivée</div>
         </div>
-        <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px">
+        <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-left:1px solid rgba(255,255,255,0.2)">
           <div style="font-size:1.9rem;font-weight:800">{calories}</div>
           <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">kcal</div>
           <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">🔥 Calories</div>
@@ -1232,7 +1241,7 @@ def main():
                         else:
                             contexte_date = f"le {jours_fr[date_dep.weekday()]} {date_dep.day} {mois_fr[date_dep.month]} {date_dep.year}"
 
-                        # On passe bien la VITESSE RÉELLE calculée à l'IA
+                        # On passe la VITESSE RÉELLE calculée à l'IA
                         briefing = generer_briefing(
                             api_key=gemini_key, 
                             dist_tot=dist_tot, 
