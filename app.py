@@ -1,5 +1,5 @@
 """
-🚴‍♂️ Vélo & Météo — v10 (Avec Coach IA Ultime & Export HTML)
+🚴‍♂️ Vélo & Météo — V10.1 (La stable + Bouton PDF Magique dans le HTML + Calendrier IA)
 ================================
 Analyse de tracé GPX : météo en temps réel, cols UCI, profil interactif,
 zones d'entraînement, score de conditions et Coach IA complet.
@@ -17,7 +17,7 @@ from plotly.subplots import make_subplots
 import math
 import logging
 import base64
-import re  # Ajouté pour le formatage du HTML
+import re  # Pour formater le texte de l'IA en HTML
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ from gemini_coach import generer_briefing
 
 
 # ==============================================================================
-# UTILITAIRES GPS
+# UTILITAIRES GPS & HTML
 # ==============================================================================
 
 def calculer_cap(lat1, lon1, lat2, lon2):
@@ -91,8 +91,7 @@ def parser_gpx(data):
 
 
 def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
-                        temps_s, heure_depart, heure_arr, vitesse, calories,
-                        briefing_ia=None):
+                        temps_s, heure_depart, heure_arr, vitesse, calories, briefing_ia=None):
     dh = int(temps_s // 3600); dm = int((temps_s % 3600) // 60)
     cols_html = ""
     for a in ascensions:
@@ -104,7 +103,9 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
             f"<td>{a.get('Arrivée sommet','—')}</td></tr>"
         )
     meteo_html = ""
-    for cp in resultats[:10]:
+    # On met toutes les données météo valides
+    valides = [cp for cp in resultats if cp.get("temp_val") is not None]
+    for cp in valides:
         t = cp.get('temp_val')
         meteo_html += (
             f"<tr><td>{cp['Heure']}</td><td>{cp['Km']} km</td>"
@@ -112,13 +113,12 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
             f"<td>{cp.get('Pluie','—')}</td><td>{cp.get('vent_val','—')} km/h</td>"
             f"<td>{cp.get('effet','—')}</td></tr>"
         )
-        
-    # ── AJOUT DU BRIEFING IA DANS LE HTML ──
+
+    # ── FORMATAGE DU BRIEFING IA ──
     html_briefing = ""
     if briefing_ia:
         texte_formate = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', briefing_ia)
         texte_formate = texte_formate.replace('\n', '<br>')
-        
         html_briefing = f"""
         <h2>🎙️ Le Briefing du Pote de Sortie</h2>
         <div class="ia-box">
@@ -129,7 +129,7 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
   body{{font-family:Arial,sans-serif;padding:32px;color:#1e293b;max-width:900px;margin:auto}}
-  h1{{color:#1e40af;border-bottom:3px solid #1e40af;padding-bottom:8px}}
+  h1{{color:#1e40af;border-bottom:3px solid #1e40af;padding-bottom:8px; margin-top: 0;}}
   h2{{color:#1e40af;margin-top:28px}}
   .score{{background:#1e40af;color:white;border-radius:10px;padding:14px 20px;
           font-size:1.1rem;font-weight:700;margin:12px 0;display:inline-block}}
@@ -142,11 +142,31 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
   th{{background:#1e40af;color:white;padding:8px;text-align:left}}
   td{{padding:6px 8px;border-bottom:1px solid #e2e8f0}}
   tr:nth-child(even) td{{background:#f8fafc}}
+  
+  /* Le style du bouton magique */
+  .btn-print {{
+      background-color: #2563eb; color: white; border: none; padding: 12px 24px;
+      font-size: 1.1rem; border-radius: 8px; cursor: pointer; font-weight: bold;
+      float: right; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: background-color 0.2s;
+  }}
+  .btn-print:hover {{ background-color: #1e40af; }}
+  
+  /* Pour l'impression PDF */
+  @media print {{
+      .btn-print {{ display: none !important; }}
+      body {{ padding: 0; max-width: 100%; }}
+      .score, .card, th, .ia-box {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+      table {{ page-break-inside: auto; }}
+      tr {{ page-break-inside: avoid; page-break-after: auto; }}
+      h2 {{ page-break-after: avoid; }}
+      .ia-box {{ page-break-inside: avoid; }}
+  }}
 </style></head><body>
+
+<button onclick="window.print()" class="btn-print">📄 Enregistrer en PDF</button>
+
 <h1>🚴‍♂️ Carnet de route</h1>
 <p>Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')} · Départ prévu : {heure_depart.strftime('%d/%m/%Y %H:%M')}</p>
-
-{html_briefing}
 
 <div class="score">{score['label']} — {score['total']}/10 &nbsp;|&nbsp;
   🌤️ {score['score_meteo']}/6 &nbsp;|&nbsp; 🏔️ {score['score_cols']}/4</div>
@@ -159,6 +179,9 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
   <div class="card"><div class="v">{vitesse} km/h</div><div class="l">🚴 Vitesse</div></div>
   <div class="card"><div class="v">{calories} kcal</div><div class="l">🔥 Calories</div></div>
 </div>
+
+{html_briefing}
+
 <h2>🏔️ Ascensions</h2>
 {"<p>Aucune difficulté catégorisée.</p>" if not ascensions else
  "<table><tr><th>Cat.</th><th>Nom</th><th>Départ</th><th>Long.</th><th>D+</th>"
@@ -175,17 +198,10 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
 # ==============================================================================
 
 def analyser_meteo_detaillee(resultats, dist_tot):
-    """
-    Analyse détaillée pluie + vent depuis les checkpoints météo.
-    Retourne un dict avec les stats clés.
-    """
     valides = [cp for cp in resultats if cp.get("temp_val") is not None]
     if not valides:
         return None
 
-    dist_totale_km = dist_tot / 1000
-
-    # ── Pluie ────────────────────────────────────────────────────────────────
     cps_pluie = [cp for cp in valides if (cp.get("pluie_pct") or 0) >= 50]
     pct_pluie = len(cps_pluie) / len(valides) * 100
 
@@ -195,9 +211,7 @@ def analyser_meteo_detaillee(resultats, dist_tot):
             premier_pluie = cp
             break
 
-    # ── Vent ─────────────────────────────────────────────────────────────────
-    compteur_effet = {"⬇️ Face": 0, "⬆️ Dos": 0,
-                      "↙️ Côté (D)": 0, "↘️ Côté (G)": 0, "—": 0}
+    compteur_effet = {"⬇️ Face": 0, "⬆️ Dos": 0, "↙️ Côté (D)": 0, "↘️ Côté (G)": 0, "—": 0}
     for cp in valides:
         effet = cp.get("effet", "—")
         compteur_effet[effet] = compteur_effet.get(effet, 0) + 1
@@ -205,10 +219,8 @@ def analyser_meteo_detaillee(resultats, dist_tot):
     total_v = len(valides)
     pct_face  = round(compteur_effet["⬇️ Face"]    / total_v * 100)
     pct_dos   = round(compteur_effet["⬆️ Dos"]     / total_v * 100)
-    pct_cote  = round((compteur_effet["↙️ Côté (D)"] +
-                       compteur_effet["↘️ Côté (G)"]) / total_v * 100)
+    pct_cote  = round((compteur_effet["↙️ Côté (D)"] + compteur_effet["↘️ Côté (G)"]) / total_v * 100)
 
-    # Segments avec vent de face (km consécutifs)
     segments_face = []
     en_face = False
     debut_face = None
@@ -235,14 +247,9 @@ def analyser_meteo_detaillee(resultats, dist_tot):
     }
 
 def calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids):
-    """
-    Score /10 = Météo (6pts) + Parcours (4pts)
-    """
     valides = [cp for cp in resultats if cp.get("temp_val") is not None]
 
-    # ── MÉTÉO (6 pts) ─────────────────────────────────────────────────────────
     if valides:
-        # Température (2pts)
         tm = sum(cp["temp_val"] for cp in valides) / len(valides)
         if   15 <= tm <= 22: s_temp = 2.0
         elif 10 <= tm <= 27: s_temp = 1.5
@@ -250,33 +257,19 @@ def calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids)
         elif  0 <= tm:       s_temp = 0.3
         else:                s_temp = 0.0
 
-        # Vent effectif (2pts) — pondéré par direction
-        POIDS_EFFET = {
-            "⬇️ Face":   1.5,
-            "↙️ Côté (D)": 0.7,
-            "↘️ Côté (G)": 0.7,
-            "⬆️ Dos":    -0.3,
-            "—":          0.5,
-        }
-        ve_moy = sum(
-            (cp.get("vent_val") or 0) * POIDS_EFFET.get(cp.get("effet", "—"), 0.5)
-            for cp in valides
-        ) / len(valides)
+        POIDS_EFFET = { "⬇️ Face": 1.5, "↙️ Côté (D)": 0.7, "↘️ Côté (G)": 0.7, "⬆️ Dos": -0.3, "—": 0.5 }
+        ve_moy = sum((cp.get("vent_val") or 0) * POIDS_EFFET.get(cp.get("effet", "—"), 0.5) for cp in valides) / len(valides)
         if   ve_moy <= 8:  s_vent = 2.0
         elif ve_moy <= 18: s_vent = 1.5
         elif ve_moy <= 30: s_vent = 0.8
         elif ve_moy <= 45: s_vent = 0.3
         else:              s_vent = 0.0
 
-        # Pluie (2pts)
         pm = sum(cp.get("pluie_pct") or 0 for cp in valides) / len(valides)
         s_pluie = round(max(0.0, 2.0 * (1 - pm / 100)), 2)
-
         sm = s_temp + s_vent + s_pluie
     else:
-        sm = 3.0   # météo inconnue → score neutre
-
-    # ── PARCOURS (4 pts, plancher 2/4) ────────────────────────────────────────
+        sm = 3.0   
 
     dist_km = sum(cp.get("Km", 0) for cp in resultats[-1:])
     if   dist_km < 30:  s_dist = 0.5
@@ -303,8 +296,6 @@ def calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids)
         s_effort = 1.0
 
     sc = max(2.0, s_parcours + s_effort)
-
-    # ── TOTAL ─────────────────────────────────────────────────────────────────
     total = round(min(10.0, max(0.0, sm + sc)), 1)
     lbl   = ("🔴 Déconseillé"       if total < 3.5 else
              "🟠 Conditions difficiles" if total < 5.0 else
@@ -376,7 +367,6 @@ def creer_figure_profil(df, ascensions, vitesse, ref_val, mode, poids, idx_survo
         font=dict(color="#1e293b"))
     return fig
 
-
 def creer_figure_col(df_profil, asc, nb_segments=None):
     d0, d1 = asc["_debut_km"], asc["_sommet_km"]
     dk     = d1 - d0
@@ -437,7 +427,6 @@ def creer_figure_col(df_profil, asc, nb_segments=None):
         hovermode="x unified",
         title=dict(text=titre, font=dict(size=13, color="#1e293b"), x=0))
     return fig
-
 
 def creer_figure_meteo(resultats):
     kms, temps, vents, rafales, pluies, cv, cp_ = [], [], [], [], [], [], []
@@ -994,10 +983,8 @@ def main():
         carte = creer_carte(points_gpx, resultats, ascensions, tiles, attr)
         st_folium(carte, width="100%", height=700, returned_objects=[])
         st.divider()
-        
-        # --- BOUTON EXPORT MIS À JOUR ---
-        if st.button("📤 Exporter le carnet de route (HTML)", use_container_width=True):
-            # On récupère le briefing en mémoire s'il a été généré
+        if st.button("📤 Exporter le carnet de route (HTML / PDF)", use_container_width=True):
+            # On récupère le briefing IA s'il est généré
             briefing_actuel = st.session_state.get("briefing_ia", None)
             
             html_bytes = generer_html_resume(score, ascensions, resultats, dist_tot,
@@ -1011,6 +998,7 @@ def main():
                 f'style="display:block;text-align:center;background:#1e40af;color:white;'
                 f'padding:10px;border-radius:8px;text-decoration:none;font-weight:600;margin-top:8px">'
                 f'⬇️ Télécharger {nom_f}</a>', unsafe_allow_html=True)
+            st.success("✅ Fichier téléchargé ! Ouvrez-le et cliquez sur 'Enregistrer en PDF' à l'intérieur.")
 
     with tab_profil:
         lbl_mode = "FTP" if mode == "⚡ Puissance" else "FC max"
@@ -1195,16 +1183,17 @@ def main():
             if st.button("💬 Générer ou Actualiser le briefing", use_container_width=True):
                 with st.spinner("Analyse du parcours et préparation des conseils en cours..."):
                     try:
-                        # Calcul du "Contexte de date" pour l'IA
-                        aujourd_hui = date.today()
-                        delta_jours = (date_dep - aujourd_hui).days
+                        # Calcul de la date exacte en français pour l'IA
+                        jours_fr = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+                        mois_fr = ["", "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
+                        delta_jours = (date_dep - date.today()).days
                         
                         if delta_jours == 0:
                             contexte_date = "Aujourd'hui"
                         elif delta_jours == 1:
                             contexte_date = "Demain"
                         else:
-                            contexte_date = f"le {date_dep.strftime('%d/%m/%Y')}"
+                            contexte_date = f"le {jours_fr[date_dep.weekday()]} {date_dep.day} {mois_fr[date_dep.month]} {date_dep.year}"
 
                         briefing = generer_briefing(
                             api_key=gemini_key, 
