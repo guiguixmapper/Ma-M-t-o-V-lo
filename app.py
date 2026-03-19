@@ -1,5 +1,5 @@
 """
-🚴‍♂️ Vélo & Météo — V10.1 (La stable + Bouton PDF Magique dans le HTML + Calendrier IA)
+🚴‍♂️ Vélo & Météo — V11 (HTML Ultime : Vitesse réelle, Carte, Profils, IA en bas)
 ================================
 Analyse de tracé GPX : météo en temps réel, cols UCI, profil interactif,
 zones d'entraînement, score de conditions et Coach IA complet.
@@ -17,7 +17,7 @@ from plotly.subplots import make_subplots
 import math
 import logging
 import base64
-import re  # Pour formater le texte de l'IA en HTML
+import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -91,8 +91,12 @@ def parser_gpx(data):
 
 
 def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
-                        temps_s, heure_depart, heure_arr, vitesse, calories, briefing_ia=None):
+                        temps_s, heure_depart, heure_arr, vitesse_plat, vit_moy_reelle, 
+                        calories, carte, df_profil, ref_val, mode, poids, briefing_ia=None):
+    
     dh = int(temps_s // 3600); dm = int((temps_s % 3600) // 60)
+    
+    # --- TABLEAUX ---
     cols_html = ""
     for a in ascensions:
         nom = a.get("Nom", "—")
@@ -102,8 +106,8 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
             f"<td>{a['Pente moy.']}</td><td>{a.get('Temps col','—')}</td>"
             f"<td>{a.get('Arrivée sommet','—')}</td></tr>"
         )
+        
     meteo_html = ""
-    # On met toutes les données météo valides
     valides = [cp for cp in resultats if cp.get("temp_val") is not None]
     for cp in valides:
         t = cp.get('temp_val')
@@ -114,27 +118,45 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
             f"<td>{cp.get('effet','—')}</td></tr>"
         )
 
-    # ── FORMATAGE DU BRIEFING IA ──
+    # --- INTEGRATION DE LA CARTE FOLIUM (via base64 iframe) ---
+    b64_map = base64.b64encode(carte.get_root().render().encode('utf-8')).decode('utf-8')
+    iframe_map = f'<iframe src="data:text/html;base64,{b64_map}" style="width:100%; height:500px; border:1px solid #e2e8f0; border-radius:8px;"></iframe>'
+
+    # --- INTEGRATION DES GRAPHIQUES PLOTLY ---
+    fig_profil = creer_figure_profil(df_profil, ascensions, vitesse_plat, ref_val, mode, poids)
+    html_profil = fig_profil.to_html(full_html=False, include_plotlyjs='cdn')
+    
+    html_profils_cols = ""
+    if ascensions:
+        html_profils_cols = "<h2>🔍 Profils des montées</h2>"
+        for asc in ascensions:
+            fig_col = creer_figure_col(df_profil, asc)
+            if fig_col:
+                # include_plotlyjs=False car le premier script (celui du profil) suffit
+                html_profils_cols += fig_col.to_html(full_html=False, include_plotlyjs=False)
+
+    # --- FORMATAGE DU BRIEFING IA ---
     html_briefing = ""
     if briefing_ia:
         texte_formate = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', briefing_ia)
         texte_formate = texte_formate.replace('\n', '<br>')
         html_briefing = f"""
-        <h2>🎙️ Le Briefing du Pote de Sortie</h2>
+        <h2>🎙️ Le Briefing du Coach IA</h2>
         <div class="ia-box">
             {texte_formate}
         </div>
         """
 
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Roadbook Velo</title>
 <style>
-  body{{font-family:Arial,sans-serif;padding:32px;color:#1e293b;max-width:900px;margin:auto}}
+  body{{font-family:Arial,sans-serif;padding:32px;color:#1e293b;max-width:1000px;margin:auto}}
   h1{{color:#1e40af;border-bottom:3px solid #1e40af;padding-bottom:8px; margin-top: 0;}}
-  h2{{color:#1e40af;margin-top:28px}}
+  h2{{color:#1e40af;margin-top:35px}}
   .score{{background:#1e40af;color:white;border-radius:10px;padding:14px 20px;
           font-size:1.1rem;font-weight:700;margin:12px 0;display:inline-block}}
   .grid{{display:flex;gap:14px;flex-wrap:wrap;margin:14px 0}}
-  .card{{background:#f1f5f9;border-radius:8px;padding:12px 18px;text-align:center;min-width:110px}}
+  .card{{background:#f1f5f9;border-radius:8px;padding:12px 18px;text-align:center;flex:1;min-width:120px}}
   .card .v{{font-size:1.4rem;font-weight:700;color:#1e40af}}
   .card .l{{font-size:.72rem;color:#64748b;margin-top:3px}}
   .ia-box{{background-color:#f8fafc; padding:25px; border-radius:12px; border-left:6px solid #22c55e; color:#1e293b; font-size:1.05rem; line-height:1.6; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-top: 15px;}}
@@ -143,7 +165,7 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
   td{{padding:6px 8px;border-bottom:1px solid #e2e8f0}}
   tr:nth-child(even) td{{background:#f8fafc}}
   
-  /* Le style du bouton magique */
+  /* Bouton d'impression */
   .btn-print {{
       background-color: #2563eb; color: white; border: none; padding: 12px 24px;
       font-size: 1.1rem; border-radius: 8px; cursor: pointer; font-weight: bold;
@@ -151,7 +173,7 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
   }}
   .btn-print:hover {{ background-color: #1e40af; }}
   
-  /* Pour l'impression PDF */
+  /* Mode impression PDF */
   @media print {{
       .btn-print {{ display: none !important; }}
       body {{ padding: 0; max-width: 100%; }}
@@ -159,37 +181,48 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
       table {{ page-break-inside: auto; }}
       tr {{ page-break-inside: avoid; page-break-after: auto; }}
       h2 {{ page-break-after: avoid; }}
-      .ia-box {{ page-break-inside: avoid; }}
+      .ia-box, iframe, .js-plotly-plot {{ page-break-inside: avoid; }}
   }}
 </style></head><body>
 
 <button onclick="window.print()" class="btn-print">📄 Enregistrer en PDF</button>
 
-<h1>🚴‍♂️ Carnet de route</h1>
+<h1>🚴‍♂️ Carnet de route détaillé</h1>
 <p>Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')} · Départ prévu : {heure_depart.strftime('%d/%m/%Y %H:%M')}</p>
 
 <div class="score">{score['label']} — {score['total']}/10 &nbsp;|&nbsp;
   🌤️ {score['score_meteo']}/6 &nbsp;|&nbsp; 🏔️ {score['score_cols']}/4</div>
+  
 <div class="grid">
   <div class="card"><div class="v">{round(dist_tot/1000,1)} km</div><div class="l">📏 Distance</div></div>
   <div class="card"><div class="v">{int(d_plus)} m</div><div class="l">⬆️ D+</div></div>
   <div class="card"><div class="v">{int(d_moins)} m</div><div class="l">⬇️ D−</div></div>
-  <div class="card"><div class="v">{dh}h{dm:02d}m</div><div class="l">⏱️ Durée</div></div>
+  <div class="card"><div class="v">{dh}h{dm:02d}m</div><div class="l">⏱️ Durée estimée</div></div>
   <div class="card"><div class="v">{heure_arr.strftime('%H:%M')}</div><div class="l">🏁 Arrivée</div></div>
-  <div class="card"><div class="v">{vitesse} km/h</div><div class="l">🚴 Vitesse</div></div>
+  <div class="card"><div class="v" style="color:#059669">{vit_moy_reelle} km/h</div><div class="l">🚴 Moy. réelle<br>(Plat: {vitesse_plat} km/h)</div></div>
   <div class="card"><div class="v">{calories} kcal</div><div class="l">🔥 Calories</div></div>
 </div>
 
-{html_briefing}
+<h2>🗺️ Carte du parcours</h2>
+{iframe_map}
 
-<h2>🏔️ Ascensions</h2>
+<h2>⛰️ Profil global</h2>
+{html_profil}
+
+<h2>🏔️ Liste des ascensions</h2>
 {"<p>Aucune difficulté catégorisée.</p>" if not ascensions else
  "<table><tr><th>Cat.</th><th>Nom</th><th>Départ</th><th>Long.</th><th>D+</th>"
  "<th>Pente</th><th>Temps</th><th>Arrivée</th></tr>" + cols_html + "</table>"}
+
+{html_profils_cols}
+
 <h2>🌤️ Météo détaillée</h2>
 {"<p>Données météo indisponibles.</p>" if not meteo_html else
  "<table><tr><th>Heure</th><th>Km</th><th>Ciel</th><th>Temp</th>"
  "<th>Pluie</th><th>Vent</th><th>Effet</th></tr>" + meteo_html + "</table>"}
+
+{html_briefing}
+
 </body></html>""".encode("utf-8")
 
 
@@ -501,7 +534,6 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
     
     COULEUR_COL = {"🔴 HC":"red","🟠 1ère Cat.":"orange",
                    "🟡 2ème Cat.":"beige","🟢 3ème Cat.":"green","🔵 4ème Cat.":"blue"}
-    cps = list(resultats)
     
     for asc in ascensions:
         lat_s = asc.get("_lat_sommet")
@@ -781,7 +813,7 @@ def main():
                 points_gpx[0].latitude, points_gpx[0].longitude,
                 date_dep.strftime("%Y-%m-%d"))
 
-    # ── CALCULS PARCOURS ─────────────────────────────────────────────────────
+    # ── CALCULS PARCOURS & VITESSE RÉELLE ────────────────────────────────────
     with etapes.container():
         with st.spinner("📐 Calcul du parcours…"):
             checkpoints = []; profil_data = []
@@ -808,6 +840,12 @@ def main():
                         "Alt (m)": int(p2.elevation) if p2.elevation else 0,
                     })
                     prochain += intervalle_sec
+
+    # Calcul de la vitesse réelle tenant compte du dénivelé
+    if temps_s > 0:
+        vit_moy_reelle = round((dist_tot / 1000) / (temps_s / 3600), 1)
+    else:
+        vit_moy_reelle = vitesse
 
     heure_arr = date_depart + timedelta(seconds=temps_s)
     pf = points_gpx[-1]
@@ -896,6 +934,7 @@ def main():
         asc["Temps col"]      = f"{mins_col} min ({vit_col} km/h)"
         asc["Arrivée sommet"] = heure_sommet.strftime("%H:%M")
 
+    # ── AFFICHAGE HAUT DE PAGE ──
     st.markdown(f"""
     <div style="background:linear-gradient(135deg,#1e3a5f,#1e40af);border-radius:12px;
                 padding:16px 24px;color:white;margin:12px 0;
@@ -917,17 +956,17 @@ def main():
         <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-right:1px solid rgba(255,255,255,0.2)">
           <div style="font-size:1.9rem;font-weight:800">{int(d_plus)}</div>
           <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">m</div>
-          <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">⬆️ Dénivelé +</div>
-        </div>
-        <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-right:1px solid rgba(255,255,255,0.2)">
-          <div style="font-size:1.9rem;font-weight:800">{int(d_moins)}</div>
-          <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">m</div>
-          <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">⬇️ Dénivelé −</div>
+          <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">⬆️ D+</div>
         </div>
         <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-right:1px solid rgba(255,255,255,0.2)">
           <div style="font-size:1.9rem;font-weight:800">{dh}h{dm:02d}</div>
           <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">min</div>
           <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">⏱️ Durée</div>
+        </div>
+        <div style="flex:1;min-width:110px;text-align:center;padding:6px 12px;border-right:1px solid rgba(255,255,255,0.2)">
+          <div style="font-size:1.9rem;font-weight:800;color:#34d399">{vit_moy_reelle}</div>
+          <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">km/h</div>
+          <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">🚴 Moy. Réelle</div>
         </div>
         <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-right:1px solid rgba(255,255,255,0.2)">
           <div style="font-size:1.9rem;font-weight:800">{heure_arr.strftime('%H:%M')}</div>
@@ -935,11 +974,6 @@ def main():
           <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">🏁 Arrivée</div>
         </div>
         <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px">
-          <div style="font-size:1.9rem;font-weight:800">{len(ascensions)}</div>
-          <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">cols</div>
-          <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">🏔️ Détectés</div>
-        </div>
-        <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-left:1px solid rgba(255,255,255,0.2)">
           <div style="font-size:1.9rem;font-weight:800">{calories}</div>
           <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">kcal</div>
           <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">🔥 Calories</div>
@@ -983,22 +1017,27 @@ def main():
         carte = creer_carte(points_gpx, resultats, ascensions, tiles, attr)
         st_folium(carte, width="100%", height=700, returned_objects=[])
         st.divider()
-        if st.button("📤 Exporter le carnet de route (HTML / PDF)", use_container_width=True):
-            # On récupère le briefing IA s'il est généré
-            briefing_actuel = st.session_state.get("briefing_ia", None)
-            
-            html_bytes = generer_html_resume(score, ascensions, resultats, dist_tot,
-                d_plus, d_moins, temps_s, date_depart, heure_arr, vitesse, calories,
-                briefing_ia=briefing_actuel)
+        
+        # BOUTON D'EXPORT MAGIQUE
+        if st.button("📤 Télécharger le Carnet de Route (HTML / PDF)", use_container_width=True):
+            with st.spinner("Génération du fichier interactif en cours..."):
+                briefing_actuel = st.session_state.get("briefing_ia", None)
                 
-            nom_f = f"velo_roadbook_{date_dep.strftime('%Y%m%d')}.html"
-            b64   = base64.b64encode(html_bytes).decode()
-            st.markdown(
-                f'<a href="data:text/html;base64,{b64}" download="{nom_f}" '
-                f'style="display:block;text-align:center;background:#1e40af;color:white;'
-                f'padding:10px;border-radius:8px;text-decoration:none;font-weight:600;margin-top:8px">'
-                f'⬇️ Télécharger {nom_f}</a>', unsafe_allow_html=True)
-            st.success("✅ Fichier téléchargé ! Ouvrez-le et cliquez sur 'Enregistrer en PDF' à l'intérieur.")
+                # On passe la carte et le dataframe profil à la fonction de génération
+                html_bytes = generer_html_resume(
+                    score, ascensions, resultats, dist_tot, d_plus, d_moins, temps_s, 
+                    date_depart, heure_arr, vitesse, vit_moy_reelle, calories, 
+                    carte, df_profil, ref_val, mode, poids, briefing_ia=briefing_actuel
+                )
+                    
+                nom_f = f"Roadbook_{date_dep.strftime('%Y%m%d')}.html"
+                b64   = base64.b64encode(html_bytes).decode()
+                st.markdown(
+                    f'<a href="data:text/html;base64,{b64}" download="{nom_f}" '
+                    f'style="display:block;text-align:center;background:#1e40af;color:white;'
+                    f'padding:10px;border-radius:8px;text-decoration:none;font-weight:600;margin-top:8px">'
+                    f'⬇️ Télécharger {nom_f}</a>', unsafe_allow_html=True)
+                st.success("✅ Fichier prêt ! Ouvrez-le et cliquez sur le bouton bleu 'Enregistrer en PDF' situé en haut de la page.")
 
     with tab_profil:
         lbl_mode = "FTP" if mode == "⚡ Puissance" else "FC max"
@@ -1036,7 +1075,6 @@ def main():
             with c2:
                 st.markdown("**Vent** — 🟢 <10 · 🟡 10–25 · 🟠 25–40 · 🔴 >40 km/h | **Pluie** — clair→foncé")
 
-            # ── Analyse détaillée vent + pluie ────────────────────────────────
             if analyse_meteo:
                 st.divider()
                 c1, c2 = st.columns(2)
@@ -1183,7 +1221,6 @@ def main():
             if st.button("💬 Générer ou Actualiser le briefing", use_container_width=True):
                 with st.spinner("Analyse du parcours et préparation des conseils en cours..."):
                     try:
-                        # Calcul de la date exacte en français pour l'IA
                         jours_fr = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
                         mois_fr = ["", "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
                         delta_jours = (date_dep - date.today()).days
@@ -1195,6 +1232,7 @@ def main():
                         else:
                             contexte_date = f"le {jours_fr[date_dep.weekday()]} {date_dep.day} {mois_fr[date_dep.month]} {date_dep.year}"
 
+                        # On passe bien la VITESSE RÉELLE calculée à l'IA
                         briefing = generer_briefing(
                             api_key=gemini_key, 
                             dist_tot=dist_tot, 
@@ -1207,7 +1245,7 @@ def main():
                             resultats=resultats,
                             heure_depart=heure_dep.strftime('%H:%M'),
                             heure_arrivee=heure_arr.strftime('%H:%M'),
-                            vitesse_moyenne=vitesse,
+                            vitesse_moyenne=vit_moy_reelle,
                             infos_soleil=infos_soleil,
                             contexte_date=contexte_date
                         )
