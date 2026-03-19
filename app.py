@@ -1189,7 +1189,7 @@ def main():
                             ascensions=ascensions, 
                             analyse_meteo=analyse_meteo,
                             resultats=resultats,
-                            heure_depart=heure_depart.strftime('%H:%M'),
+                            heure_depart=heure_dep.strftime('%H:%M'),  # CORRIGÉ !
                             heure_arrivee=heure_arr.strftime('%H:%M'),
                             vitesse_moyenne=vitesse,
                             infos_soleil=infos_soleil,
