@@ -1,5 +1,5 @@
 """
-🚴‍♂️ Vélo & Météo — v12 (Le vrai code magnifique + PDF + Calendrier)
+🚴‍♂️ Vélo & Météo — v10 (Avec Coach IA Ultime & Export HTML)
 ================================
 Analyse de tracé GPX : météo en temps réel, cols UCI, profil interactif,
 zones d'entraînement, score de conditions et Coach IA complet.
@@ -16,6 +16,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import math
 import logging
+import base64
+import re  # Ajouté pour le formatage du HTML
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -65,7 +67,6 @@ from weather import (
 )
 from overpass import enrichir_cols
 from gemini_coach import generer_briefing
-from export_pdf import generer_roadbook_pdf
 
 
 # ==============================================================================
@@ -89,6 +90,86 @@ def parser_gpx(data):
         logger.error(f"GPX : {e}"); return []
 
 
+def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
+                        temps_s, heure_depart, heure_arr, vitesse, calories,
+                        briefing_ia=None):
+    dh = int(temps_s // 3600); dm = int((temps_s % 3600) // 60)
+    cols_html = ""
+    for a in ascensions:
+        nom = a.get("Nom", "—")
+        cols_html += (
+            f"<tr><td>{a['Catégorie']}</td><td>{nom if nom != '—' else ''}</td>"
+            f"<td>{a['Départ (km)']} km</td><td>{a['Longueur']}</td><td>{a['Dénivelé']}</td>"
+            f"<td>{a['Pente moy.']}</td><td>{a.get('Temps col','—')}</td>"
+            f"<td>{a.get('Arrivée sommet','—')}</td></tr>"
+        )
+    meteo_html = ""
+    for cp in resultats[:10]:
+        t = cp.get('temp_val')
+        meteo_html += (
+            f"<tr><td>{cp['Heure']}</td><td>{cp['Km']} km</td>"
+            f"<td>{cp.get('Ciel','—')}</td><td>{f'{t}°C' if t else '—'}</td>"
+            f"<td>{cp.get('Pluie','—')}</td><td>{cp.get('vent_val','—')} km/h</td>"
+            f"<td>{cp.get('effet','—')}</td></tr>"
+        )
+        
+    # ── AJOUT DU BRIEFING IA DANS LE HTML ──
+    html_briefing = ""
+    if briefing_ia:
+        texte_formate = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', briefing_ia)
+        texte_formate = texte_formate.replace('\n', '<br>')
+        
+        html_briefing = f"""
+        <h2>🎙️ Le Briefing du Pote de Sortie</h2>
+        <div class="ia-box">
+            {texte_formate}
+        </div>
+        """
+
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+  body{{font-family:Arial,sans-serif;padding:32px;color:#1e293b;max-width:900px;margin:auto}}
+  h1{{color:#1e40af;border-bottom:3px solid #1e40af;padding-bottom:8px}}
+  h2{{color:#1e40af;margin-top:28px}}
+  .score{{background:#1e40af;color:white;border-radius:10px;padding:14px 20px;
+          font-size:1.1rem;font-weight:700;margin:12px 0;display:inline-block}}
+  .grid{{display:flex;gap:14px;flex-wrap:wrap;margin:14px 0}}
+  .card{{background:#f1f5f9;border-radius:8px;padding:12px 18px;text-align:center;min-width:110px}}
+  .card .v{{font-size:1.4rem;font-weight:700;color:#1e40af}}
+  .card .l{{font-size:.72rem;color:#64748b;margin-top:3px}}
+  .ia-box{{background-color:#f8fafc; padding:25px; border-radius:12px; border-left:6px solid #22c55e; color:#1e293b; font-size:1.05rem; line-height:1.6; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-top: 15px;}}
+  table{{width:100%;border-collapse:collapse;margin-top:10px;font-size:.83rem}}
+  th{{background:#1e40af;color:white;padding:8px;text-align:left}}
+  td{{padding:6px 8px;border-bottom:1px solid #e2e8f0}}
+  tr:nth-child(even) td{{background:#f8fafc}}
+</style></head><body>
+<h1>🚴‍♂️ Carnet de route</h1>
+<p>Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')} · Départ prévu : {heure_depart.strftime('%d/%m/%Y %H:%M')}</p>
+
+{html_briefing}
+
+<div class="score">{score['label']} — {score['total']}/10 &nbsp;|&nbsp;
+  🌤️ {score['score_meteo']}/6 &nbsp;|&nbsp; 🏔️ {score['score_cols']}/4</div>
+<div class="grid">
+  <div class="card"><div class="v">{round(dist_tot/1000,1)} km</div><div class="l">📏 Distance</div></div>
+  <div class="card"><div class="v">{int(d_plus)} m</div><div class="l">⬆️ D+</div></div>
+  <div class="card"><div class="v">{int(d_moins)} m</div><div class="l">⬇️ D−</div></div>
+  <div class="card"><div class="v">{dh}h{dm:02d}m</div><div class="l">⏱️ Durée</div></div>
+  <div class="card"><div class="v">{heure_arr.strftime('%H:%M')}</div><div class="l">🏁 Arrivée</div></div>
+  <div class="card"><div class="v">{vitesse} km/h</div><div class="l">🚴 Vitesse</div></div>
+  <div class="card"><div class="v">{calories} kcal</div><div class="l">🔥 Calories</div></div>
+</div>
+<h2>🏔️ Ascensions</h2>
+{"<p>Aucune difficulté catégorisée.</p>" if not ascensions else
+ "<table><tr><th>Cat.</th><th>Nom</th><th>Départ</th><th>Long.</th><th>D+</th>"
+ "<th>Pente</th><th>Temps</th><th>Arrivée</th></tr>" + cols_html + "</table>"}
+<h2>🌤️ Météo détaillée</h2>
+{"<p>Données météo indisponibles.</p>" if not meteo_html else
+ "<table><tr><th>Heure</th><th>Km</th><th>Ciel</th><th>Temp</th>"
+ "<th>Pluie</th><th>Vent</th><th>Effet</th></tr>" + meteo_html + "</table>"}
+</body></html>""".encode("utf-8")
+
+
 # ==============================================================================
 # SCORE GLOBAL ET ANALYSE
 # ==============================================================================
@@ -101,6 +182,8 @@ def analyser_meteo_detaillee(resultats, dist_tot):
     valides = [cp for cp in resultats if cp.get("temp_val") is not None]
     if not valides:
         return None
+
+    dist_totale_km = dist_tot / 1000
 
     # ── Pluie ────────────────────────────────────────────────────────────────
     cps_pluie = [cp for cp in valides if (cp.get("pluie_pct") or 0) >= 50]
@@ -194,6 +277,7 @@ def calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids)
         sm = 3.0   # météo inconnue → score neutre
 
     # ── PARCOURS (4 pts, plancher 2/4) ────────────────────────────────────────
+
     dist_km = sum(cp.get("Km", 0) for cp in resultats[-1:])
     if   dist_km < 30:  s_dist = 0.5
     elif dist_km < 80:  s_dist = 0.7
@@ -909,26 +993,24 @@ def main():
         tiles, attr = FONDS_CARTE[fond_choisi]
         carte = creer_carte(points_gpx, resultats, ascensions, tiles, attr)
         st_folium(carte, width="100%", height=700, returned_objects=[])
-        
         st.divider()
-        if st.button("📥 Télécharger le Roadbook (PDF)", type="primary", use_container_width=True):
-            with st.spinner("Génération du PDF en cours (photos des profils...)"):
-                try:
-                    pdf_bytes = generer_roadbook_pdf(
-                        score=score, ascensions=ascensions, resultats=resultats, df_profil=df_profil,
-                        dist_tot=dist_tot, d_plus=d_plus, d_moins=d_moins, temps_s=temps_s,
-                        date_depart=date_depart, heure_arr=heure_arr, vitesse=vitesse, calories=calories,
-                        briefing_ia=st.session_state.get("briefing_ia")
-                    )
-                    st.download_button(
-                        label="✅ PDF Prêt - Cliquez ici pour télécharger",
-                        data=pdf_bytes,
-                        file_name=f"Roadbook_Velo_{date_dep.strftime('%Y%m%d')}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
-                except Exception as e:
-                    st.error(f"❌ Erreur lors de la création du PDF : {e}")
+        
+        # --- BOUTON EXPORT MIS À JOUR ---
+        if st.button("📤 Exporter le carnet de route (HTML)", use_container_width=True):
+            # On récupère le briefing en mémoire s'il a été généré
+            briefing_actuel = st.session_state.get("briefing_ia", None)
+            
+            html_bytes = generer_html_resume(score, ascensions, resultats, dist_tot,
+                d_plus, d_moins, temps_s, date_depart, heure_arr, vitesse, calories,
+                briefing_ia=briefing_actuel)
+                
+            nom_f = f"velo_roadbook_{date_dep.strftime('%Y%m%d')}.html"
+            b64   = base64.b64encode(html_bytes).decode()
+            st.markdown(
+                f'<a href="data:text/html;base64,{b64}" download="{nom_f}" '
+                f'style="display:block;text-align:center;background:#1e40af;color:white;'
+                f'padding:10px;border-radius:8px;text-decoration:none;font-weight:600;margin-top:8px">'
+                f'⬇️ Télécharger {nom_f}</a>', unsafe_allow_html=True)
 
     with tab_profil:
         lbl_mode = "FTP" if mode == "⚡ Puissance" else "FC max"
@@ -1099,10 +1181,11 @@ def main():
                 "Effet vent":  st.column_config.TextColumn("🚴 Effet"),
             })
 
-    # ── ANALYSE IA (AVEC FIX CALENDRIER) ──────────────────────────────────────
+    # ── ANALYSE IA ───────────────────────────────────────────────────────────
     with tab_analyse:
         st.subheader("🎙️ Le Briefing du Pote de Sortie")
-        st.markdown("Obtenez une analyse personnalisée générée par l'Intelligence Artificielle de Google (Gemini) : infos météo, équipement conseillé et calcul de votre ravitaillement.")
+        st.markdown("Obtenez une analyse personnalisée générée par l'Intelligence Artificielle de Google (Gemini) : infos météo, gestion de l'effort, équipement conseillé et calcul de votre ravitaillement.")
+        
         if not gemini_key:
             st.info("👈 **Pour activer l'analyse**, entrez votre clé API Gemini dans le menu '🔧 Options avancées' situé dans la barre latérale gauche.")
         else:
@@ -1110,34 +1193,48 @@ def main():
                 st.session_state.briefing_ia = None
 
             if st.button("💬 Générer ou Actualiser le briefing", use_container_width=True):
-                with st.spinner("Analyse du parcours et calcul du ravitaillement en cours..."):
+                with st.spinner("Analyse du parcours et préparation des conseils en cours..."):
                     try:
-                        # ── FIX CALENDRIER ──
-                        jours_fr = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
-                        mois_fr = ["", "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
-                        delta_jours = (date_dep - date.today()).days
+                        # Calcul du "Contexte de date" pour l'IA
+                        aujourd_hui = date.today()
+                        delta_jours = (date_dep - aujourd_hui).days
                         
                         if delta_jours == 0:
                             contexte_date = "Aujourd'hui"
                         elif delta_jours == 1:
                             contexte_date = "Demain"
                         else:
-                            contexte_date = f"le {jours_fr[date_dep.weekday()]} {date_dep.day} {mois_fr[date_dep.month]} {date_dep.year}"
+                            contexte_date = f"le {date_dep.strftime('%d/%m/%Y')}"
 
                         briefing = generer_briefing(
-                            api_key=gemini_key, dist_tot=dist_tot, d_plus=d_plus, temps_s=temps_s,
-                            calories=calories, score=score, ascensions=ascensions, analyse_meteo=analyse_meteo,
-                            resultats=resultats, heure_depart=heure_dep.strftime('%H:%M'),
-                            heure_arrivee=heure_arr.strftime('%H:%M'), vitesse_moyenne=vitesse,
-                            infos_soleil=infos_soleil, contexte_date=contexte_date
+                            api_key=gemini_key, 
+                            dist_tot=dist_tot, 
+                            d_plus=d_plus, 
+                            temps_s=temps_s,
+                            calories=calories,
+                            score=score, 
+                            ascensions=ascensions, 
+                            analyse_meteo=analyse_meteo,
+                            resultats=resultats,
+                            heure_depart=heure_dep.strftime('%H:%M'),
+                            heure_arrivee=heure_arr.strftime('%H:%M'),
+                            vitesse_moyenne=vitesse,
+                            infos_soleil=infos_soleil,
+                            contexte_date=contexte_date
                         )
-                        st.session_state.briefing_ia = briefing
+                        if briefing:
+                            st.session_state.briefing_ia = briefing
                     except Exception as e:
-                        st.error(f"❌ Erreur API : {e}")
+                        st.error(f"❌ Erreur lors de la communication avec l'API Gemini. (Détail: {e})")
 
             if st.session_state.briefing_ia:
-                st.success("✅ Briefing prêt ! Vous pouvez maintenant télécharger le Roadbook PDF depuis l'onglet 'Carte'.")
-                st.markdown(f"<div style='background-color:#f8fafc; padding:25px; border-radius:12px; border-left:6px solid #22c55e;'>{st.session_state.briefing_ia}</div>", unsafe_allow_html=True)
+                st.success("✅ Briefing prêt !")
+                st.markdown(f"""
+                <div style="background-color:#f8fafc; padding:25px; border-radius:12px; border-left:6px solid #22c55e; color:#1e293b; font-size:1.05rem; line-height:1.6; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+                    {st.session_state.briefing_ia}
+                </div>
+                """, unsafe_allow_html=True)
+
 
 if __name__ == "__main__":
     main()
