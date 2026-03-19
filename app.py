@@ -1,5 +1,5 @@
 """
-🚴‍♂️ Vélo & Météo — v9 (Avec Coach IA Ultime)
+🚴‍♂️ Vélo & Météo — v10 (Avec Coach IA Ultime & Export HTML)
 ================================
 Analyse de tracé GPX : météo en temps réel, cols UCI, profil interactif,
 zones d'entraînement, score de conditions et Coach IA complet.
@@ -17,6 +17,7 @@ from plotly.subplots import make_subplots
 import math
 import logging
 import base64
+import re  # Ajouté pour le formatage du HTML
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -90,7 +91,8 @@ def parser_gpx(data):
 
 
 def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
-                        temps_s, heure_depart, heure_arr, vitesse, calories):
+                        temps_s, heure_depart, heure_arr, vitesse, calories,
+                        briefing_ia=None):
     dh = int(temps_s // 3600); dm = int((temps_s % 3600) // 60)
     cols_html = ""
     for a in ascensions:
@@ -110,6 +112,20 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
             f"<td>{cp.get('Pluie','—')}</td><td>{cp.get('vent_val','—')} km/h</td>"
             f"<td>{cp.get('effet','—')}</td></tr>"
         )
+        
+    # ── AJOUT DU BRIEFING IA DANS LE HTML ──
+    html_briefing = ""
+    if briefing_ia:
+        texte_formate = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', briefing_ia)
+        texte_formate = texte_formate.replace('\n', '<br>')
+        
+        html_briefing = f"""
+        <h2>🎙️ Le Briefing du Pote de Sortie</h2>
+        <div class="ia-box">
+            {texte_formate}
+        </div>
+        """
+
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
   body{{font-family:Arial,sans-serif;padding:32px;color:#1e293b;max-width:900px;margin:auto}}
@@ -121,13 +137,17 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
   .card{{background:#f1f5f9;border-radius:8px;padding:12px 18px;text-align:center;min-width:110px}}
   .card .v{{font-size:1.4rem;font-weight:700;color:#1e40af}}
   .card .l{{font-size:.72rem;color:#64748b;margin-top:3px}}
+  .ia-box{{background-color:#f8fafc; padding:25px; border-radius:12px; border-left:6px solid #22c55e; color:#1e293b; font-size:1.05rem; line-height:1.6; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-top: 15px;}}
   table{{width:100%;border-collapse:collapse;margin-top:10px;font-size:.83rem}}
   th{{background:#1e40af;color:white;padding:8px;text-align:left}}
   td{{padding:6px 8px;border-bottom:1px solid #e2e8f0}}
   tr:nth-child(even) td{{background:#f8fafc}}
 </style></head><body>
-<h1>🚴‍♂️ Résumé de sortie vélo</h1>
-<p>Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')} · Départ : {heure_depart.strftime('%d/%m/%Y %H:%M')}</p>
+<h1>🚴‍♂️ Carnet de route</h1>
+<p>Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')} · Départ prévu : {heure_depart.strftime('%d/%m/%Y %H:%M')}</p>
+
+{html_briefing}
+
 <div class="score">{score['label']} — {score['total']}/10 &nbsp;|&nbsp;
   🌤️ {score['score_meteo']}/6 &nbsp;|&nbsp; 🏔️ {score['score_cols']}/4</div>
 <div class="grid">
@@ -143,7 +163,7 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
 {"<p>Aucune difficulté catégorisée.</p>" if not ascensions else
  "<table><tr><th>Cat.</th><th>Nom</th><th>Départ</th><th>Long.</th><th>D+</th>"
  "<th>Pente</th><th>Temps</th><th>Arrivée</th></tr>" + cols_html + "</table>"}
-<h2>🌤️ Météo</h2>
+<h2>🌤️ Météo détaillée</h2>
 {"<p>Données météo indisponibles.</p>" if not meteo_html else
  "<table><tr><th>Heure</th><th>Km</th><th>Ciel</th><th>Temp</th>"
  "<th>Pluie</th><th>Vent</th><th>Effet</th></tr>" + meteo_html + "</table>"}
@@ -974,10 +994,17 @@ def main():
         carte = creer_carte(points_gpx, resultats, ascensions, tiles, attr)
         st_folium(carte, width="100%", height=700, returned_objects=[])
         st.divider()
-        if st.button("📤 Exporter le résumé (HTML)", use_container_width=True):
+        
+        # --- BOUTON EXPORT MIS À JOUR ---
+        if st.button("📤 Exporter le carnet de route (HTML)", use_container_width=True):
+            # On récupère le briefing en mémoire s'il a été généré
+            briefing_actuel = st.session_state.get("briefing_ia", None)
+            
             html_bytes = generer_html_resume(score, ascensions, resultats, dist_tot,
-                d_plus, d_moins, temps_s, date_depart, heure_arr, vitesse, calories)
-            nom_f = f"velo_meteo_{date_dep.strftime('%Y%m%d')}.html"
+                d_plus, d_moins, temps_s, date_depart, heure_arr, vitesse, calories,
+                briefing_ia=briefing_actuel)
+                
+            nom_f = f"velo_roadbook_{date_dep.strftime('%Y%m%d')}.html"
             b64   = base64.b64encode(html_bytes).decode()
             st.markdown(
                 f'<a href="data:text/html;base64,{b64}" download="{nom_f}" '
@@ -1189,7 +1216,7 @@ def main():
                             ascensions=ascensions, 
                             analyse_meteo=analyse_meteo,
                             resultats=resultats,
-                            heure_depart=heure_dep.strftime('%H:%M'),  # CORRIGÉ !
+                            heure_depart=heure_dep.strftime('%H:%M'),
                             heure_arrivee=heure_arr.strftime('%H:%M'),
                             vitesse_moyenne=vitesse,
                             infos_soleil=infos_soleil,
