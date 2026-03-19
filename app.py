@@ -1,5 +1,5 @@
 """
-🚴‍♂️ Vélo & Météo — V12 (HTML Ultime + Vitesse Réelle + Mémoire Anti-Crash)
+🚴‍♂️ Vélo & Météo — V12.1 (Carte Propre XXL + Vitesse Réelle + IA)
 ================================
 Analyse de tracé GPX : météo en temps réel, cols UCI, profil interactif,
 zones d'entraînement, score de conditions et Coach IA complet.
@@ -68,7 +68,6 @@ from weather import (
 from overpass import enrichir_cols
 from gemini_coach import generer_briefing
 
-# 🛡️ LE BOUCLIER MÉMOIRE EST ICI (Appelé quand on clique sur Exporter)
 @st.cache_data(ttl=1800, show_spinner=False)
 def memoire_meteo(frozen):
     return recuperer_meteo_batch(frozen)
@@ -123,9 +122,9 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
             f"<td>{cp.get('effet','—')}</td></tr>"
         )
 
-    # --- INTEGRATION DE LA CARTE FOLIUM (via base64 iframe) ---
+    # --- INTEGRATION DE LA CARTE FOLIUM (XXL) ---
     b64_map = base64.b64encode(carte.get_root().render().encode('utf-8')).decode('utf-8')
-    iframe_map = f'<iframe src="data:text/html;base64,{b64_map}" style="width:100%; height:500px; border:1px solid #e2e8f0; border-radius:8px;"></iframe>'
+    iframe_map = f'<iframe src="data:text/html;base64,{b64_map}" style="width:100%; height:800px; border:1px solid #e2e8f0; border-radius:8px;"></iframe>'
 
     # --- INTEGRATION DES GRAPHIQUES PLOTLY ---
     fig_profil = creer_figure_profil(df_profil, ascensions, vitesse_plat, ref_val, mode, poids)
@@ -154,7 +153,8 @@ def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Roadbook Velo</title>
 <style>
-  body{{font-family:Arial,sans-serif;padding:32px;color:#1e293b;max-width:1000px;margin:auto}}
+  /* Élargissement du max-width de 1000px à 1200px pour une carte plus grande */
+  body{{font-family:Arial,sans-serif;padding:32px;color:#1e293b;max-width:1200px;margin:auto}}
   h1{{color:#1e40af;border-bottom:3px solid #1e40af;padding-bottom:8px; margin-top: 0;}}
   h2{{color:#1e40af;margin-top:35px}}
   .score{{background:#1e40af;color:white;border-radius:10px;padding:14px 20px;
@@ -903,7 +903,7 @@ def main():
     with etapes.container():
         with st.spinner("📡 Récupération météo..."):
             frozen   = tuple((cp["lat"], cp["lon"], cp["Heure_API"]) for cp in checkpoints)
-            # On utilise notre boîte à mémoire locale
+            # On utilise la boîte à mémoire sécurisée en haut du fichier
             rep_list = memoire_meteo(frozen)
                 
     etapes.empty()
@@ -1032,11 +1032,13 @@ def main():
             with st.spinner("Génération du fichier interactif en cours..."):
                 briefing_actuel = st.session_state.get("briefing_ia", None)
                 
-                # On passe la carte et le dataframe profil à la fonction de génération
+                # Création d'une carte TOUTE NEUVE pour l'export (évite le bug de superposition de Streamlit)
+                carte_export = creer_carte(points_gpx, resultats, ascensions, tiles, attr)
+
                 html_bytes = generer_html_resume(
                     score, ascensions, resultats, dist_tot, d_plus, d_moins, temps_s, 
                     date_depart, heure_arr, vitesse, vit_moy_reelle, calories, 
-                    carte, df_profil, ref_val, mode, poids, briefing_ia=briefing_actuel
+                    carte_export, df_profil, ref_val, mode, poids, briefing_ia=briefing_actuel
                 )
                     
                 nom_f = f"Roadbook_{date_dep.strftime('%Y%m%d')}.html"
