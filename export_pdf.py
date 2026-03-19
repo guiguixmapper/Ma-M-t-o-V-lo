@@ -15,8 +15,10 @@ def nettoyer_texte(texte):
     Nettoie le texte pour éviter que le PDF ne plante à cause des emojis 
     ou des caractères très spéciaux non supportés par la police standard.
     """
-    if not texte: return ""
-    return texte.encode('latin-1', 'ignore').decode('latin-1')
+    if texte is None: 
+        return ""
+    # On force la conversion en string et on retire les caractères hors latin-1 (les emojis)
+    return str(texte).encode('latin-1', 'ignore').decode('latin-1')
 
 def creer_figure_col_pdf(df_profil, asc, nb_segments=None):
     """Recrée le profil du col spécifiquement pour le photographier dans le PDF"""
@@ -55,7 +57,7 @@ def creer_figure_col_pdf(df_profil, asc, nb_segments=None):
         km_d = km_f
 
     nom = asc.get("Nom", "")
-    titre = f"{nom} ({asc['Catégorie']}) - {asc['Longueur']}, D+ {asc['Dénivelé']}"
+    titre = nettoyer_texte(f"{nom} ({asc['Catégorie']}) - {asc['Longueur']}, D+ {asc['Dénivelé']}")
     fig.update_layout(
         title=titre,
         height=300, width=700, margin=dict(l=40, r=20, t=40, b=30),
@@ -69,7 +71,7 @@ def creer_figure_col_pdf(df_profil, asc, nb_segments=None):
 class RoadbookPDF(FPDF):
     def header(self):
         self.set_font('helvetica', 'B', 15)
-        self.set_text_color(30, 64, 175) # Bleu foncé
+        self.set_text_color(30, 64, 175)
         self.cell(0, 10, 'ROADBOOK - CARNET DE ROUTE', border=False, align='C')
         self.ln(15)
 
@@ -93,10 +95,10 @@ def generer_roadbook_pdf(score, ascensions, resultats, df_profil, dist_tot, d_pl
     dh = int(temps_s // 3600); dm = int((temps_s % 3600) // 60)
     resume_txt = (f"Distance: {round(dist_tot/1000,1)} km | D+: {int(d_plus)} m | D-: {int(d_moins)} m\n"
                   f"Duree: {dh}h{dm:02d}m | Vitesse moy.: {vitesse} km/h | Calories: {calories} kcal\n"
-                  f"Difficulte globale: {score['total']}/10 ({nettoyer_texte(score['label'])})")
+                  f"Difficulte globale: {score['total']}/10 ({score['label']})")
     
     pdf.set_font('helvetica', '', 11)
-    pdf.multi_cell(0, 6, resume_txt)
+    pdf.multi_cell(0, 6, nettoyer_texte(resume_txt))
     pdf.ln(5)
 
     # --- METEO ---
@@ -107,19 +109,20 @@ def generer_roadbook_pdf(score, ascensions, resultats, df_profil, dist_tot, d_pl
     col_widths = [15, 15, 30, 20, 20, 30, 40]
     headers = ["Heure", "Km", "Ciel", "Temp", "Pluie", "Vent", "Effet"]
     for i, h in enumerate(headers):
-        pdf.cell(col_widths[i], 8, h, border=1, align='C')
+        pdf.cell(col_widths[i], 8, nettoyer_texte(h), border=1, align='C')
     pdf.ln(8)
     
     pdf.set_font('helvetica', '', 9)
     for cp in resultats:
         t = cp.get('temp_val')
-        pdf.cell(col_widths[0], 8, str(cp['Heure']), border=1, align='C')
-        pdf.cell(col_widths[1], 8, str(cp['Km']), border=1, align='C')
-        pdf.cell(col_widths[2], 8, nettoyer_texte(str(cp.get('Ciel','-'))), border=1, align='C')
-        pdf.cell(col_widths[3], 8, f"{t} C" if t else "-", border=1, align='C')
-        pdf.cell(col_widths[4], 8, f"{cp.get('pluie_pct', 0)} %", border=1, align='C')
-        pdf.cell(col_widths[5], 8, f"{cp.get('vent_val','-')} km/h", border=1, align='C')
-        pdf.cell(col_widths[6], 8, nettoyer_texte(str(cp.get('effet','-'))), border=1, align='C')
+        # ICI on applique nettoyer_texte() PARTOUT pour éviter le crash du drapeau
+        pdf.cell(col_widths[0], 8, nettoyer_texte(cp.get('Heure', '-')), border=1, align='C')
+        pdf.cell(col_widths[1], 8, nettoyer_texte(cp.get('Km', '-')), border=1, align='C')
+        pdf.cell(col_widths[2], 8, nettoyer_texte(cp.get('Ciel', '-')), border=1, align='C')
+        pdf.cell(col_widths[3], 8, nettoyer_texte(f"{t} C" if t is not None else "-"), border=1, align='C')
+        pdf.cell(col_widths[4], 8, nettoyer_texte(f"{cp.get('pluie_pct', 0)} %"), border=1, align='C')
+        pdf.cell(col_widths[5], 8, nettoyer_texte(f"{cp.get('vent_val','-')} km/h"), border=1, align='C')
+        pdf.cell(col_widths[6], 8, nettoyer_texte(cp.get('effet', '-')), border=1, align='C')
         pdf.ln(8)
     pdf.ln(10)
 
@@ -131,10 +134,10 @@ def generer_roadbook_pdf(score, ascensions, resultats, df_profil, dist_tot, d_pl
         
         for asc in ascensions:
             pdf.set_font('helvetica', 'B', 11)
-            nom = nettoyer_texte(asc.get("Nom", "Sans nom"))
-            pdf.cell(0, 8, f"{nom} ({nettoyer_texte(asc['Catégorie'])}) - Km {asc['Départ (km)']}", new_x="LMARGIN", new_y="NEXT")
+            nom = asc.get("Nom", "Sans nom")
+            pdf.cell(0, 8, nettoyer_texte(f"{nom} ({asc.get('Catégorie', '')}) - Km {asc.get('Départ (km)', '')}"), new_x="LMARGIN", new_y="NEXT")
             pdf.set_font('helvetica', '', 10)
-            details = f"Longueur: {asc['Longueur']} | D+: {asc['Dénivelé']} | Pente: {asc['Pente moy.']} moy. / {asc['Pente max']} max"
+            details = f"Longueur: {asc.get('Longueur', '')} | D+: {asc.get('Dénivelé', '')} | Pente: {asc.get('Pente moy.', '')} moy. / {asc.get('Pente max', '')} max"
             pdf.cell(0, 6, nettoyer_texte(details), new_x="LMARGIN", new_y="NEXT")
             
             # Génération Image
@@ -154,7 +157,7 @@ def generer_roadbook_pdf(score, ascensions, resultats, df_profil, dist_tot, d_pl
         pdf.set_font('helvetica', '', 11)
         
         texte_propre = nettoyer_texte(briefing_ia)
-        # On remplace les ** du markdown par des tirets pour que ce soit propre
+        # On remplace les ** du markdown par rien pour que ce soit propre dans le PDF
         texte_propre = texte_propre.replace("**", "")
         pdf.multi_cell(0, 6, texte_propre)
 
