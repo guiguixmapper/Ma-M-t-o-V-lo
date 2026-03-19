@@ -1,5 +1,5 @@
 """
-🚴‍♂️ Vélo & Météo — v10 (Avec Coach IA Ultime & Export HTML)
+🚴‍♂️ Vélo & Météo — v11 (Export PDF Kaleido & Fix Calendrier)
 ================================
 Analyse de tracé GPX : météo en temps réel, cols UCI, profil interactif,
 zones d'entraînement, score de conditions et Coach IA complet.
@@ -16,8 +16,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import math
 import logging
-import base64
-import re  # Ajouté pour le formatage du HTML
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -67,6 +65,7 @@ from weather import (
 )
 from overpass import enrichir_cols
 from gemini_coach import generer_briefing
+from export_pdf import generer_roadbook_pdf
 
 
 # ==============================================================================
@@ -80,7 +79,6 @@ def calculer_cap(lat1, lon1, lat2, lon2):
     y = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
     return (math.degrees(math.atan2(x, y)) + 360) % 360
 
-
 @st.cache_data(show_spinner=False)
 def parser_gpx(data):
     try:
@@ -90,102 +88,14 @@ def parser_gpx(data):
         logger.error(f"GPX : {e}"); return []
 
 
-def generer_html_resume(score, ascensions, resultats, dist_tot, d_plus, d_moins,
-                        temps_s, heure_depart, heure_arr, vitesse, calories,
-                        briefing_ia=None):
-    dh = int(temps_s // 3600); dm = int((temps_s % 3600) // 60)
-    cols_html = ""
-    for a in ascensions:
-        nom = a.get("Nom", "—")
-        cols_html += (
-            f"<tr><td>{a['Catégorie']}</td><td>{nom if nom != '—' else ''}</td>"
-            f"<td>{a['Départ (km)']} km</td><td>{a['Longueur']}</td><td>{a['Dénivelé']}</td>"
-            f"<td>{a['Pente moy.']}</td><td>{a.get('Temps col','—')}</td>"
-            f"<td>{a.get('Arrivée sommet','—')}</td></tr>"
-        )
-    meteo_html = ""
-    for cp in resultats[:10]:
-        t = cp.get('temp_val')
-        meteo_html += (
-            f"<tr><td>{cp['Heure']}</td><td>{cp['Km']} km</td>"
-            f"<td>{cp.get('Ciel','—')}</td><td>{f'{t}°C' if t else '—'}</td>"
-            f"<td>{cp.get('Pluie','—')}</td><td>{cp.get('vent_val','—')} km/h</td>"
-            f"<td>{cp.get('effet','—')}</td></tr>"
-        )
-        
-    # ── AJOUT DU BRIEFING IA DANS LE HTML ──
-    html_briefing = ""
-    if briefing_ia:
-        texte_formate = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', briefing_ia)
-        texte_formate = texte_formate.replace('\n', '<br>')
-        
-        html_briefing = f"""
-        <h2>🎙️ Le Briefing du Pote de Sortie</h2>
-        <div class="ia-box">
-            {texte_formate}
-        </div>
-        """
-
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
-<style>
-  body{{font-family:Arial,sans-serif;padding:32px;color:#1e293b;max-width:900px;margin:auto}}
-  h1{{color:#1e40af;border-bottom:3px solid #1e40af;padding-bottom:8px}}
-  h2{{color:#1e40af;margin-top:28px}}
-  .score{{background:#1e40af;color:white;border-radius:10px;padding:14px 20px;
-          font-size:1.1rem;font-weight:700;margin:12px 0;display:inline-block}}
-  .grid{{display:flex;gap:14px;flex-wrap:wrap;margin:14px 0}}
-  .card{{background:#f1f5f9;border-radius:8px;padding:12px 18px;text-align:center;min-width:110px}}
-  .card .v{{font-size:1.4rem;font-weight:700;color:#1e40af}}
-  .card .l{{font-size:.72rem;color:#64748b;margin-top:3px}}
-  .ia-box{{background-color:#f8fafc; padding:25px; border-radius:12px; border-left:6px solid #22c55e; color:#1e293b; font-size:1.05rem; line-height:1.6; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-top: 15px;}}
-  table{{width:100%;border-collapse:collapse;margin-top:10px;font-size:.83rem}}
-  th{{background:#1e40af;color:white;padding:8px;text-align:left}}
-  td{{padding:6px 8px;border-bottom:1px solid #e2e8f0}}
-  tr:nth-child(even) td{{background:#f8fafc}}
-</style></head><body>
-<h1>🚴‍♂️ Carnet de route</h1>
-<p>Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')} · Départ prévu : {heure_depart.strftime('%d/%m/%Y %H:%M')}</p>
-
-{html_briefing}
-
-<div class="score">{score['label']} — {score['total']}/10 &nbsp;|&nbsp;
-  🌤️ {score['score_meteo']}/6 &nbsp;|&nbsp; 🏔️ {score['score_cols']}/4</div>
-<div class="grid">
-  <div class="card"><div class="v">{round(dist_tot/1000,1)} km</div><div class="l">📏 Distance</div></div>
-  <div class="card"><div class="v">{int(d_plus)} m</div><div class="l">⬆️ D+</div></div>
-  <div class="card"><div class="v">{int(d_moins)} m</div><div class="l">⬇️ D−</div></div>
-  <div class="card"><div class="v">{dh}h{dm:02d}m</div><div class="l">⏱️ Durée</div></div>
-  <div class="card"><div class="v">{heure_arr.strftime('%H:%M')}</div><div class="l">🏁 Arrivée</div></div>
-  <div class="card"><div class="v">{vitesse} km/h</div><div class="l">🚴 Vitesse</div></div>
-  <div class="card"><div class="v">{calories} kcal</div><div class="l">🔥 Calories</div></div>
-</div>
-<h2>🏔️ Ascensions</h2>
-{"<p>Aucune difficulté catégorisée.</p>" if not ascensions else
- "<table><tr><th>Cat.</th><th>Nom</th><th>Départ</th><th>Long.</th><th>D+</th>"
- "<th>Pente</th><th>Temps</th><th>Arrivée</th></tr>" + cols_html + "</table>"}
-<h2>🌤️ Météo détaillée</h2>
-{"<p>Données météo indisponibles.</p>" if not meteo_html else
- "<table><tr><th>Heure</th><th>Km</th><th>Ciel</th><th>Temp</th>"
- "<th>Pluie</th><th>Vent</th><th>Effet</th></tr>" + meteo_html + "</table>"}
-</body></html>""".encode("utf-8")
-
-
 # ==============================================================================
 # SCORE GLOBAL ET ANALYSE
 # ==============================================================================
 
 def analyser_meteo_detaillee(resultats, dist_tot):
-    """
-    Analyse détaillée pluie + vent depuis les checkpoints météo.
-    Retourne un dict avec les stats clés.
-    """
     valides = [cp for cp in resultats if cp.get("temp_val") is not None]
-    if not valides:
-        return None
+    if not valides: return None
 
-    dist_totale_km = dist_tot / 1000
-
-    # ── Pluie ────────────────────────────────────────────────────────────────
     cps_pluie = [cp for cp in valides if (cp.get("pluie_pct") or 0) >= 50]
     pct_pluie = len(cps_pluie) / len(valides) * 100
 
@@ -195,9 +105,7 @@ def analyser_meteo_detaillee(resultats, dist_tot):
             premier_pluie = cp
             break
 
-    # ── Vent ─────────────────────────────────────────────────────────────────
-    compteur_effet = {"⬇️ Face": 0, "⬆️ Dos": 0,
-                      "↙️ Côté (D)": 0, "↘️ Côté (G)": 0, "—": 0}
+    compteur_effet = {"⬇️ Face": 0, "⬆️ Dos": 0, "↙️ Côté (D)": 0, "↘️ Côté (G)": 0, "—": 0}
     for cp in valides:
         effet = cp.get("effet", "—")
         compteur_effet[effet] = compteur_effet.get(effet, 0) + 1
@@ -205,10 +113,8 @@ def analyser_meteo_detaillee(resultats, dist_tot):
     total_v = len(valides)
     pct_face  = round(compteur_effet["⬇️ Face"]    / total_v * 100)
     pct_dos   = round(compteur_effet["⬆️ Dos"]     / total_v * 100)
-    pct_cote  = round((compteur_effet["↙️ Côté (D)"] +
-                       compteur_effet["↘️ Côté (G)"]) / total_v * 100)
+    pct_cote  = round((compteur_effet["↙️ Côté (D)"] + compteur_effet["↘️ Côté (G)"]) / total_v * 100)
 
-    # Segments avec vent de face (km consécutifs)
     segments_face = []
     en_face = False
     debut_face = None
@@ -221,8 +127,7 @@ def analyser_meteo_detaillee(resultats, dist_tot):
             if en_face:
                 segments_face.append((debut_face, cp["Km"]))
                 en_face = False
-    if en_face:
-        segments_face.append((debut_face, valides[-1]["Km"]))
+    if en_face: segments_face.append((debut_face, valides[-1]["Km"]))
 
     return {
         "pct_pluie":       round(pct_pluie),
@@ -235,14 +140,9 @@ def analyser_meteo_detaillee(resultats, dist_tot):
     }
 
 def calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids):
-    """
-    Score /10 = Météo (6pts) + Parcours (4pts)
-    """
     valides = [cp for cp in resultats if cp.get("temp_val") is not None]
 
-    # ── MÉTÉO (6 pts) ─────────────────────────────────────────────────────────
     if valides:
-        # Température (2pts)
         tm = sum(cp["temp_val"] for cp in valides) / len(valides)
         if   15 <= tm <= 22: s_temp = 2.0
         elif 10 <= tm <= 27: s_temp = 1.5
@@ -250,33 +150,19 @@ def calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids)
         elif  0 <= tm:       s_temp = 0.3
         else:                s_temp = 0.0
 
-        # Vent effectif (2pts) — pondéré par direction
-        POIDS_EFFET = {
-            "⬇️ Face":   1.5,
-            "↙️ Côté (D)": 0.7,
-            "↘️ Côté (G)": 0.7,
-            "⬆️ Dos":    -0.3,
-            "—":          0.5,
-        }
-        ve_moy = sum(
-            (cp.get("vent_val") or 0) * POIDS_EFFET.get(cp.get("effet", "—"), 0.5)
-            for cp in valides
-        ) / len(valides)
+        POIDS_EFFET = {"⬇️ Face": 1.5, "↙️ Côté (D)": 0.7, "↘️ Côté (G)": 0.7, "⬆️ Dos": -0.3, "—": 0.5}
+        ve_moy = sum((cp.get("vent_val") or 0) * POIDS_EFFET.get(cp.get("effet", "—"), 0.5) for cp in valides) / len(valides)
         if   ve_moy <= 8:  s_vent = 2.0
         elif ve_moy <= 18: s_vent = 1.5
         elif ve_moy <= 30: s_vent = 0.8
         elif ve_moy <= 45: s_vent = 0.3
         else:              s_vent = 0.0
 
-        # Pluie (2pts)
         pm = sum(cp.get("pluie_pct") or 0 for cp in valides) / len(valides)
         s_pluie = round(max(0.0, 2.0 * (1 - pm / 100)), 2)
-
         sm = s_temp + s_vent + s_pluie
     else:
-        sm = 3.0   # météo inconnue → score neutre
-
-    # ── PARCOURS (4 pts, plancher 2/4) ────────────────────────────────────────
+        sm = 3.0   
 
     dist_km = sum(cp.get("Km", 0) for cp in resultats[-1:])
     if   dist_km < 30:  s_dist = 0.5
@@ -303,8 +189,6 @@ def calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids)
         s_effort = 1.0
 
     sc = max(2.0, s_parcours + s_effort)
-
-    # ── TOTAL ─────────────────────────────────────────────────────────────────
     total = round(min(10.0, max(0.0, sm + sc)), 1)
     lbl   = ("🔴 Déconseillé"       if total < 3.5 else
              "🟠 Conditions difficiles" if total < 5.0 else
@@ -376,7 +260,6 @@ def creer_figure_profil(df, ascensions, vitesse, ref_val, mode, poids, idx_survo
         font=dict(color="#1e293b"))
     return fig
 
-
 def creer_figure_col(df_profil, asc, nb_segments=None):
     d0, d1 = asc["_debut_km"], asc["_sommet_km"]
     dk     = d1 - d0
@@ -437,7 +320,6 @@ def creer_figure_col(df_profil, asc, nb_segments=None):
         hovermode="x unified",
         title=dict(text=titre, font=dict(size=13, color="#1e293b"), x=0))
     return fig
-
 
 def creer_figure_meteo(resultats):
     kms, temps, vents, rafales, pluies, cv, cp_ = [], [], [], [], [], [], []
@@ -512,7 +394,6 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
     
     COULEUR_COL = {"🔴 HC":"red","🟠 1ère Cat.":"orange",
                    "🟡 2ème Cat.":"beige","🟢 3ème Cat.":"green","🔵 4ème Cat.":"blue"}
-    cps = list(resultats)
     
     for asc in ascensions:
         lat_s = asc.get("_lat_sommet")
@@ -583,59 +464,7 @@ def creer_carte(points_gpx, resultats, ascensions, tiles="CartoDB positron", att
     fg_meteo.add_to(carte)
     fg_cols.add_to(carte)
     fg_trace.add_to(carte)
-
     folium.LayerControl(collapsed=False, position="topright").add_to(carte)
-
-    css_legende = """
-    <style>
-    .leaflet-control-layers {
-        border-radius: 10px !important;
-        border: none !important;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important;
-        padding: 0 !important;
-        overflow: hidden;
-        font-family: Arial, sans-serif !important;
-    }
-    .leaflet-control-layers-expanded {
-        padding: 10px 14px !important;
-        min-width: 160px !important;
-    }
-    .leaflet-control-layers-list {
-        margin: 0 !important;
-    }
-    .leaflet-control-layers label {
-        display: flex !important;
-        align-items: center !important;
-        gap: 6px !important;
-        font-size: 13px !important;
-        color: #1e293b !important;
-        margin: 4px 0 !important;
-        cursor: pointer !important;
-    }
-    .leaflet-control-layers-separator {
-        display: none !important;
-    }
-    .leaflet-control-layers-overlays {
-        display: flex !important;
-        flex-direction: column !important;
-        gap: 2px !important;
-    }
-    .leaflet-control-layers-expanded::before {
-        content: "🗺️ Calques";
-        display: block;
-        font-weight: 700;
-        font-size: 11px;
-        color: #64748b;
-        letter-spacing: .5px;
-        text-transform: uppercase;
-        margin-bottom: 8px;
-        padding-bottom: 6px;
-        border-bottom: 1px solid #e2e8f0;
-    }
-    </style>
-    """
-    carte.get_root().html.add_child(folium.Element(css_legende))
-
     return carte
 
 
@@ -660,8 +489,7 @@ def main():
     heure_dep = st.sidebar.time_input("🕐 Heure de départ")
     vitesse   = st.sidebar.number_input("🚴 Vitesse moy. plat (km/h)", 5, 60, 25)
     st.sidebar.divider()
-    mode = st.sidebar.radio("📊 Mode d'analyse",
-                             ["⚡ Puissance", "🫀 Fréquence Cardiaque"], horizontal=True)
+    mode = st.sidebar.radio("📊 Mode d'analyse", ["⚡ Puissance", "🫀 Fréquence Cardiaque"], horizontal=True)
     if mode == "⚡ Puissance":
         ref_val = st.sidebar.number_input("⚡ FTP (W)", 50, 500, 220)
         fc_max  = None; ftp_fc = ref_val
@@ -680,51 +508,28 @@ def main():
     st.sidebar.divider()
     with st.sidebar.expander("🏔️ Détection des montées", expanded=False):
 
-        if "sensibilite" not in st.session_state:
-            st.session_state.sensibilite = 3
-        if "seuil_debut" not in st.session_state:
-            st.session_state.seuil_debut = float(climbing_module.SEUIL_DEBUT)
-        if "seuil_fin" not in st.session_state:
-            st.session_state.seuil_fin = float(climbing_module.SEUIL_FIN)
-        if "fusion_m" not in st.session_state:
-            st.session_state.fusion_m = int(climbing_module.MAX_DESCENTE_FUSION_M)
+        if "sensibilite" not in st.session_state: st.session_state.sensibilite = 3
+        if "seuil_debut" not in st.session_state: st.session_state.seuil_debut = float(climbing_module.SEUIL_DEBUT)
+        if "seuil_fin" not in st.session_state: st.session_state.seuil_fin = float(climbing_module.SEUIL_FIN)
+        if "fusion_m" not in st.session_state: st.session_state.fusion_m = int(climbing_module.MAX_DESCENTE_FUSION_M)
 
-        SENSIBILITE_LABELS = {
-            1: "🔵 Strict — grands cols seulement",
-            2: "🟢 Conservateur",
-            3: "🟡 Équilibré (défaut)",
-            4: "🟠 Sensible",
-            5: "🔴 Maximum — toutes les côtes",
-        }
         SENSIBILITE_PARAMS = {
-            1: (4.0, 2.0,  20),
-            2: (3.0, 1.5,  35),
-            3: (2.0, 1.0,  50),
-            4: (1.5, 0.5,  70),
-            5: (0.5, 0.0, 100),
+            1: (4.0, 2.0,  20), 2: (3.0, 1.5,  35), 3: (2.0, 1.0,  50),
+            4: (1.5, 0.5,  70), 5: (0.5, 0.0, 100),
         }
 
-        st.slider("🎚️ Sensibilité de détection", 1, 5, step=1,
-            key="sensibilite",
-            help="Bas = seulement les vraies montées. Haut = capte toutes les côtes.")
-        niv = st.session_state.sensibilite
-        st.caption(SENSIBILITE_LABELS[niv])
+        niv = st.slider("🎚️ Sensibilité de détection", 1, 5, step=1, key="sensibilite")
 
         if st.button("↺ Réinitialiser", use_container_width=True):
             st.session_state["_reset_demande"] = True
             st.rerun()
 
         if st.session_state.pop("_reset_demande", False):
-            st.session_state.pop("sensibilite", None)
-            st.session_state.pop("seuil_debut", None)
-            st.session_state.pop("seuil_fin", None)
-            st.session_state.pop("fusion_m", None)
-            st.session_state.pop("_last_sensibilite", None)
+            for k in ["sensibilite", "seuil_debut", "seuil_fin", "fusion_m", "_last_sensibilite"]:
+                st.session_state.pop(k, None)
             st.rerun()
 
         with st.expander("⚙️ Réglages fins", expanded=False):
-            st.caption("Synchronisés avec la sensibilité — modifiez pour affiner.")
-
             sd_sync, sf_sync, fm_sync = SENSIBILITE_PARAMS[niv]
             if st.session_state.get("_last_sensibilite") != niv:
                 st.session_state.seuil_debut = sd_sync
@@ -732,15 +537,9 @@ def main():
                 st.session_state.fusion_m    = fm_sync
                 st.session_state["_last_sensibilite"] = niv
 
-            st.slider("Seuil de départ (%)", 0.5, 5.0, step=0.5,
-                key="seuil_debut",
-                help="Pente minimale pour démarrer une montée.")
-            st.slider("Seuil de fin (%)", 0.0, 3.0, step=0.5,
-                key="seuil_fin",
-                help="Pente en dessous de laquelle la montée est terminée.")
-            st.slider("Fusion (D− max, m)", 10, 200, step=10,
-                key="fusion_m",
-                help="Descente max pour fusionner deux runs en une seule montée.")
+            st.slider("Seuil de départ (%)", 0.5, 5.0, step=0.5, key="seuil_debut")
+            st.slider("Seuil de fin (%)", 0.0, 3.0, step=0.5, key="seuil_fin")
+            st.slider("Fusion (D− max, m)", 10, 200, step=10, key="fusion_m")
 
         climbing_module.SEUIL_DEBUT           = st.session_state.seuil_debut
         climbing_module.SEUIL_FIN             = st.session_state.seuil_fin
@@ -749,21 +548,8 @@ def main():
     # ── OPTIONS AVANCÉES ──────────────────────────────────────────────────────
     st.sidebar.divider()
     with st.sidebar.expander("🔧 Options avancées", expanded=False):
-        noms_osm = st.toggle("🗺️ Nommer les cols (OpenStreetMap)", value=False,
-            help="Recherche le nom officiel de chaque col sur OpenStreetMap. "
-                 "Peut être lent ou indisponible selon l'hébergement.")
-        if noms_osm:
-            st.sidebar.warning(
-                "⚠️ Les serveurs Overpass sont souvent surchargés ou bloqués "
-                "sur Streamlit Cloud. La recherche peut échouer ou être lente."
-            )
-        gemini_key = st.text_input(
-            "🤖 Clé API Gemini",
-            value="",
-            type="password",
-            help="Génère un résumé intelligent de ta sortie. "
-                 "Clé gratuite sur aistudio.google.com."
-        )
+        noms_osm = st.toggle("🗺️ Nommer les cols (OSM)", value=False)
+        gemini_key = st.text_input("🤖 Clé API Gemini", value="", type="password")
 
     ph_fuseau = st.sidebar.empty()
     ph_fuseau.info("🌍 Fuseau : en attente…")
@@ -777,8 +563,7 @@ def main():
     with etapes.container():
         with st.spinner("📍 Lecture du fichier GPX…"):
             points_gpx = parser_gpx(fichier.read())
-    if not points_gpx:
-        st.error("❌ Fichier GPX vide ou corrompu."); return
+    if not points_gpx: st.error("❌ Fichier GPX vide."); return
 
     with etapes.container():
         with st.spinner("🌍 Fuseau horaire…"):
@@ -788,9 +573,7 @@ def main():
 
     with etapes.container():
         with st.spinner("🌅 Lever/coucher du soleil…"):
-            infos_soleil = recuperer_soleil(
-                points_gpx[0].latitude, points_gpx[0].longitude,
-                date_dep.strftime("%Y-%m-%d"))
+            infos_soleil = recuperer_soleil(points_gpx[0].latitude, points_gpx[0].longitude, date_dep.strftime("%Y-%m-%d"))
 
     # ── CALCULS PARCOURS ─────────────────────────────────────────────────────
     with etapes.container():
@@ -807,16 +590,14 @@ def main():
                     else: d_moins += abs(dif)
                 dist_tot += d; temps_s += (d + dp * 10) / vms
                 cap = calculer_cap(p1.latitude, p1.longitude, p2.latitude, p2.longitude)
-                profil_data.append({"Distance (km)": round(dist_tot/1000, 3),
-                                    "Altitude (m)": p2.elevation or 0})
+                profil_data.append({"Distance (km)": round(dist_tot/1000, 3), "Altitude (m)": p2.elevation or 0})
                 if temps_s >= prochain:
                     hp = date_depart + timedelta(seconds=temps_s)
                     checkpoints.append({
                         "lat": p2.latitude, "lon": p2.longitude, "Cap": cap,
                         "Heure": hp.strftime("%d/%m %H:%M"),
                         "Heure_API": hp.replace(minute=0, second=0).strftime("%Y-%m-%dT%H:00"),
-                        "Km": round(dist_tot/1000, 1),
-                        "Alt (m)": int(p2.elevation) if p2.elevation else 0,
+                        "Km": round(dist_tot/1000, 1), "Alt (m)": int(p2.elevation) if p2.elevation else 0,
                     })
                     prochain += intervalle_sec
 
@@ -826,8 +607,7 @@ def main():
         "lat": pf.latitude, "lon": pf.longitude, "Cap": cap,
         "Heure": heure_arr.strftime("%d/%m %H:%M") + " 🏁",
         "Heure_API": heure_arr.replace(minute=0, second=0).strftime("%Y-%m-%dT%H:00"),
-        "Km": round(dist_tot/1000, 1),
-        "Alt (m)": int(pf.elevation) if pf.elevation else 0,
+        "Km": round(dist_tot/1000, 1), "Alt (m)": int(pf.elevation) if pf.elevation else 0,
     })
     df_profil = pd.DataFrame(profil_data)
 
@@ -846,8 +626,7 @@ def main():
             pt_par_km[km] = p2
 
         def coords_au_km(km_cible):
-            if not pt_par_km:
-                return None, None
+            if not pt_par_km: return None, None
             km_proche = min(pt_par_km.keys(), key=lambda k: abs(k - km_cible))
             pt = pt_par_km[km_proche]
             return pt.latitude, pt.longitude
@@ -857,13 +636,10 @@ def main():
             lat_d, lon_d = coords_au_km(asc["_debut_km"])
             asc["_lat_sommet"] = lat_s
             asc["_lon_sommet"] = lon_s
-            asc["_lat_debut"]  = lat_d
-            asc["_lon_debut"]  = lon_d
 
-    # ── NOMS OSM ──────────────────────────────────────────────────────────────
     if noms_osm and ascensions:
         with etapes.container():
-            with st.spinner("🗺️ Recherche des noms de cols (OpenStreetMap)…"):
+            with st.spinner("🗺️ Recherche des noms (OSM)…"):
                 ascensions = enrichir_cols(ascensions, points_gpx)
 
     for asc in ascensions:
@@ -881,28 +657,22 @@ def main():
     if err_meteo:
         st.warning("⚠️ Météo indisponible.")
         for cp in checkpoints:
-            cp.update(Ciel="—", temp_val=None, Pluie="—", pluie_pct=None,
-                      vent_val=None, rafales_val=None, Dir="—",
-                      dir_deg=None, effet="—", ressenti=None)
+            cp.update(Ciel="—", temp_val=None, Pluie="—", pluie_pct=None, vent_val=None, rafales_val=None, Dir="—", dir_deg=None, effet="—", ressenti=None)
             resultats.append(cp)
     else:
         for i, cp in enumerate(checkpoints):
             m = extraire_meteo(rep_list[i] if i < len(rep_list) else {}, cp["Heure_API"])
-            if m["dir_deg"] is not None:
-                m["effet"] = direction_vent_relative(cp["Cap"], m["dir_deg"])
+            if m["dir_deg"] is not None: m["effet"] = direction_vent_relative(cp["Cap"], m["dir_deg"])
             cp.update(m); resultats.append(cp)
 
-    # ── SCORE + MÉTRIQUES ─────────────────────────────────────────────────────
     dh = int(temps_s // 3600); dm = int((temps_s % 3600) // 60)
     score    = calculer_score(resultats, ascensions, d_plus, vitesse, ref_val, mode, poids)
     calories = calculer_calories(max(1, poids - 10), temps_s, dist_tot, d_plus, vitesse)
-
     analyse_meteo = analyser_meteo_detaillee(resultats, dist_tot)
 
     for asc in ascensions:
         temps_jusqu_debut = (asc["_debut_km"] / vitesse) * 3600
-        mins_col, vit_col = estimer_temps_col(
-            asc["_sommet_km"] - asc["_debut_km"], asc["_pente_moy"], vitesse)
+        mins_col, vit_col = estimer_temps_col(asc["_sommet_km"] - asc["_debut_km"], asc["_pente_moy"], vitesse)
         heure_sommet = date_depart + timedelta(seconds=temps_jusqu_debut) + timedelta(minutes=mins_col)
         asc["Temps col"]      = f"{mins_col} min ({vit_col} km/h)"
         asc["Arrivée sommet"] = heure_sommet.strftime("%H:%M")
@@ -914,10 +684,6 @@ def main():
       <div style="min-width:160px;padding-right:24px;border-right:1px solid rgba(255,255,255,0.25)">
         <div style="font-size:2.8rem;font-weight:900;line-height:1">{score['total']}<span style="font-size:1.2rem">/10</span></div>
         <div style="font-size:.95rem;font-weight:600;margin-top:2px">{score['label']}</div>
-        <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
-          <span style="background:rgba(255,255,255,.2);border-radius:20px;padding:3px 10px;font-size:.75rem">🌤️ {score['score_meteo']}/6</span>
-          <span style="background:rgba(255,255,255,.2);border-radius:20px;padding:3px 10px;font-size:.75rem">🏔️ {score['score_cols']}/4</span>
-        </div>
       </div>
       <div style="display:flex;gap:0;flex:1;flex-wrap:wrap;padding-left:8px">
         <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-right:1px solid rgba(255,255,255,0.2)">
@@ -928,32 +694,17 @@ def main():
         <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-right:1px solid rgba(255,255,255,0.2)">
           <div style="font-size:1.9rem;font-weight:800">{int(d_plus)}</div>
           <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">m</div>
-          <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">⬆️ Dénivelé +</div>
-        </div>
-        <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-right:1px solid rgba(255,255,255,0.2)">
-          <div style="font-size:1.9rem;font-weight:800">{int(d_moins)}</div>
-          <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">m</div>
-          <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">⬇️ Dénivelé −</div>
+          <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">⬆️ D+</div>
         </div>
         <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-right:1px solid rgba(255,255,255,0.2)">
           <div style="font-size:1.9rem;font-weight:800">{dh}h{dm:02d}</div>
           <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">min</div>
           <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">⏱️ Durée</div>
         </div>
-        <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-right:1px solid rgba(255,255,255,0.2)">
-          <div style="font-size:1.9rem;font-weight:800">{heure_arr.strftime('%H:%M')}</div>
-          <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">&nbsp;</div>
-          <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">🏁 Arrivée</div>
-        </div>
         <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px">
           <div style="font-size:1.9rem;font-weight:800">{len(ascensions)}</div>
           <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">cols</div>
           <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">🏔️ Détectés</div>
-        </div>
-        <div style="flex:1;min-width:90px;text-align:center;padding:6px 12px;border-left:1px solid rgba(255,255,255,0.2)">
-          <div style="font-size:1.9rem;font-weight:800">{calories}</div>
-          <div style="font-size:.9rem;color:rgba(255,255,255,0.85)">kcal</div>
-          <div style="font-size:.75rem;color:rgba(255,255,255,0.6)">🔥 Calories</div>
         </div>
       </div>
     </div>""", unsafe_allow_html=True)
@@ -964,277 +715,91 @@ def main():
     ])
 
     with tab_carte:
-        if infos_soleil:
-            ls = infos_soleil["lever"].strftime("%H:%M")
-            cs = infos_soleil["coucher"].strftime("%H:%M")
-            ds = infos_soleil["coucher"] - infos_soleil["lever"]
-            hj, mj = int(ds.seconds // 3600), int((ds.seconds % 3600) // 60)
-            st.markdown(f"""
-            <div class="soleil-row">
-              <span style="font-size:1.3rem">☀️</span>
-              <div class="soleil-item"><div class="s-val">🌅 {ls}</div><div class="s-lbl">Lever (UTC)</div></div>
-              <div class="soleil-item"><div class="s-val">🌇 {cs}</div><div class="s-lbl">Coucher (UTC)</div></div>
-              <div class="soleil-item"><div class="s-val">{hj}h{mj:02d}m</div><div class="s-lbl">Durée du jour</div></div>
-            </div>""", unsafe_allow_html=True)
-            tz = infos_soleil["lever"].tzinfo
-            if date_depart.replace(tzinfo=tz) < infos_soleil["lever"]:
-                st.warning(f"⚠️ Départ avant le lever du soleil ({ls} UTC) — prévoyez un éclairage.")
-            if heure_arr.replace(tzinfo=tz) > infos_soleil["coucher"]:
-                st.warning(f"⚠️ Arrivée après le coucher ({cs} UTC) — prévoyez un éclairage.")
-        FONDS_CARTE = {
-            "🗺️ CartoDB Positron (épuré)": ("CartoDB positron", None),
-            "🌍 OpenStreetMap (classique)": ("OpenStreetMap", None),
-            "🏔️ OpenTopoMap (relief)": (
-                "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-                "Map data © OpenStreetMap contributors, SRTM | Map style © OpenTopoMap (CC-BY-SA)",
-            ),
-        }
-        fond_choisi = st.selectbox("🖼️ Fond de carte", options=list(FONDS_CARTE.keys()), index=0)
-        tiles, attr = FONDS_CARTE[fond_choisi]
-        carte = creer_carte(points_gpx, resultats, ascensions, tiles, attr)
+        fond_choisi = st.selectbox("🖼️ Fond de carte", options=["CartoDB positron", "OpenStreetMap"], index=0)
+        carte = creer_carte(points_gpx, resultats, ascensions, fond_choisi)
         st_folium(carte, width="100%", height=700, returned_objects=[])
-        st.divider()
         
-        # --- BOUTON EXPORT MIS À JOUR ---
-        if st.button("📤 Exporter le carnet de route (HTML)", use_container_width=True):
-            # On récupère le briefing en mémoire s'il a été généré
-            briefing_actuel = st.session_state.get("briefing_ia", None)
-            
-            html_bytes = generer_html_resume(score, ascensions, resultats, dist_tot,
-                d_plus, d_moins, temps_s, date_depart, heure_arr, vitesse, calories,
-                briefing_ia=briefing_actuel)
-                
-            nom_f = f"velo_roadbook_{date_dep.strftime('%Y%m%d')}.html"
-            b64   = base64.b64encode(html_bytes).decode()
-            st.markdown(
-                f'<a href="data:text/html;base64,{b64}" download="{nom_f}" '
-                f'style="display:block;text-align:center;background:#1e40af;color:white;'
-                f'padding:10px;border-radius:8px;text-decoration:none;font-weight:600;margin-top:8px">'
-                f'⬇️ Télécharger {nom_f}</a>', unsafe_allow_html=True)
+        st.divider()
+        if st.button("📥 Télécharger le Roadbook (PDF)", type="primary", use_container_width=True):
+            with st.spinner("Génération du PDF en cours (photos des profils...)"):
+                try:
+                    pdf_bytes = generer_roadbook_pdf(
+                        score=score, ascensions=ascensions, resultats=resultats, df_profil=df_profil,
+                        dist_tot=dist_tot, d_plus=d_plus, d_moins=d_moins, temps_s=temps_s,
+                        date_depart=date_depart, heure_arr=heure_arr, vitesse=vitesse, calories=calories,
+                        briefing_ia=st.session_state.get("briefing_ia")
+                    )
+                    st.download_button(
+                        label="✅ PDF Prêt - Cliquez ici pour télécharger",
+                        data=pdf_bytes,
+                        file_name=f"Roadbook_Velo_{date_dep.strftime('%Y%m%d')}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+                except Exception as e:
+                    st.error(f"❌ Erreur lors de la création du PDF : {e}")
 
     with tab_profil:
-        lbl_mode = "FTP" if mode == "⚡ Puissance" else "FC max"
-        st.caption(f"Segments colorés selon les zones {lbl_mode}.")
         idx_survol = None
-        if ascensions:
-            noms_liste = ["(toutes les côtes)"] + [
-                f"{a.get('Nom','') + ' — ' if a.get('Nom','—') != '—' else ''}"
-                f"{a['Catégorie']} — Km {a['Départ (km)']}→{a['Sommet (km)']} ({a['Longueur']})"
-                for a in ascensions]
-            choix = st.selectbox("🔍 Mettre en avant :", options=noms_liste, index=0)
-            if choix != "(toutes les côtes)":
-                idx_survol = noms_liste.index(choix) - 1
         if not df_profil.empty:
-            st.plotly_chart(
-                creer_figure_profil(df_profil, ascensions, vitesse, ref_val, mode, poids, idx_survol),
-                width='stretch')
-        st.markdown(f"**Zones d'entraînement ({lbl_mode}) :**")
-        cols_z = st.columns(6)
-        for j, (_, _, num, lbl, coul) in enumerate(zones_actives(mode)):
-            cols_z[j].markdown(
-                f'<div style="background:{coul};color:white;border-radius:6px;'
-                f'padding:6px;text-align:center;font-size:.72rem"><b>{lbl}</b></div>',
-                unsafe_allow_html=True)
+            st.plotly_chart(creer_figure_profil(df_profil, ascensions, vitesse, ref_val, mode, poids, idx_survol), width='stretch')
 
     with tab_meteo:
-        if err_meteo:
-            st.warning("⚠️ Données météo indisponibles.")
-        else:
-            st.caption("Température · Vent & Rafales · Probabilité de pluie.")
-            st.plotly_chart(creer_figure_meteo(resultats), width='stretch')
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**Température** — 🟣 <5° · 🔵 5–15° · 🟢 15–22° (idéal) · 🟠 22–30° · 🔴 >30°C")
-            with c2:
-                st.markdown("**Vent** — 🟢 <10 · 🟡 10–25 · 🟠 25–40 · 🔴 >40 km/h | **Pluie** — clair→foncé")
-
-            # ── Analyse détaillée vent + pluie ────────────────────────────────
-            if analyse_meteo:
-                st.divider()
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("**💨 Répartition du vent**")
-                    def barre(pct, couleur, label, emoji):
-                        st.markdown(f"""
-                        <div style="margin-bottom:8px">
-                            <div style="display:flex;justify-content:space-between;font-size:.85rem;margin-bottom:3px">
-                                <span>{emoji} {label}</span>
-                                <span style="font-weight:700">{pct}%</span>
-                            </div>
-                            <div style="background:#e2e8f0;border-radius:4px;height:8px">
-                                <div style="background:{couleur};width:{pct}%;height:8px;border-radius:4px"></div>
-                            </div>
-                        </div>""", unsafe_allow_html=True)
-                    barre(analyse_meteo["pct_face"], "#ef4444", "Face", "⬇️")
-                    barre(analyse_meteo["pct_cote"], "#eab308", "Côté", "↔️")
-                    barre(analyse_meteo["pct_dos"],  "#22c55e", "Dos",  "⬆️")
-                    if analyse_meteo["segments_face"]:
-                        st.caption("Segments avec vent de face :")
-                        for d, f in analyse_meteo["segments_face"]:
-                            st.caption(f"  • Km {d:.0f} → {f:.0f} ({f-d:.0f} km)")
-                with c2:
-                    st.markdown("**🌧️ Risque de pluie**")
-                    pp = analyse_meteo["pct_pluie"]
-                    couleur_pp = "#ef4444" if pp > 60 else "#f97316" if pp > 30 else "#22c55e"
-                    st.markdown(f"""
-                    <div style="text-align:center;padding:16px;background:#f8fafc;
-                                border-radius:10px;margin-bottom:12px">
-                        <div style="font-size:2.5rem;font-weight:900;color:{couleur_pp}">{pp}%</div>
-                        <div style="font-size:.85rem;color:#64748b">du parcours avec risque > 50%</div>
-                    </div>""", unsafe_allow_html=True)
-                    if analyse_meteo["premier_pluie"]:
-                        cp_p = analyse_meteo["premier_pluie"]
-                        st.markdown(f"""
-                        <div style="background:#fef3c7;border-radius:8px;padding:10px 14px;font-size:.85rem">
-                            🕐 Premier risque à <b>{cp_p['Heure']}</b> — Km {cp_p['Km']}<br>
-                            Probabilité : <b>{cp_p.get('pluie_pct','?')}%</b>
-                        </div>""", unsafe_allow_html=True)
-                    else:
-                        st.markdown("""
-                        <div style="background:#dcfce7;border-radius:8px;padding:10px 14px;font-size:.85rem">
-                            ✅ Aucun risque de pluie significatif sur le parcours
-                        </div>""", unsafe_allow_html=True)
+        if err_meteo: st.warning("⚠️ Données météo indisponibles.")
+        else: st.plotly_chart(creer_figure_meteo(resultats), width='stretch')
 
     with tab_cols:
-        st.caption(LEGENDE_UCI)
         if ascensions:
-            for a in ascensions:
-                w   = estimer_watts(a["_pente_moy"], vitesse, poids)
-                _, zlbl, _ = get_zone(w, ref_val, zones_actives(mode))
-                pct = round(w / ref_val * 100) if ref_val > 0 else 0
-                a["Puissance"]  = f"{w} W"
-                fc_est = estimer_fc(w, ftp_fc, ref_val)
-                a["Effort val"] = (f"{pct}% FTP" if mode == "⚡ Puissance"
-                                   else f"~{fc_est} bpm" if fc_est else "—")
-                a["Zone"]   = zlbl
-                a["Effort"] = ("🔴 Max" if pct>105 else "🟠 Très dur" if pct>95
-                               else "🟡 Difficile" if pct>80 else "🟢 Modéré" if pct>60
-                               else "🔵 Endurance")
-            cols_aff = ["Catégorie","Nom","Départ (km)","Sommet (km)","Longueur",
-                        "Dénivelé","Pente moy.","Pente max","Alt. sommet",
-                        "Score UCI","Temps col","Arrivée sommet","Puissance","Effort val","Zone","Effort"]
-            st.dataframe(pd.DataFrame(ascensions)[cols_aff],
-                width='stretch', hide_index=True,
-                column_config={
-                    "Nom":            st.column_config.TextColumn("🏔️ Nom OSM"),
-                    "Effort val":     st.column_config.TextColumn("% FTP" if mode=="⚡ Puissance" else "FC estimée"),
-                    "Temps col":      st.column_config.TextColumn("⏱️ Temps col"),
-                    "Arrivée sommet": st.column_config.TextColumn("🏁 Arrivée sommet"),
-                    "Zone":           st.column_config.TextColumn("Zone"),
-                    "Effort":         st.column_config.TextColumn("Effort"),
-                })
-            st.divider()
-            st.subheader("🔍 Profil détaillé d'une montée")
-            noms_cols = [
-                f"{a.get('Nom','') + ' — ' if a.get('Nom','—') != '—' else ''}"
-                f"{a['Catégorie']} — Km {a['Départ (km)']}→{a['Sommet (km)']} ({a['Longueur']}, {a['Dénivelé']})"
-                for a in ascensions]
-            col_choix = st.selectbox("Choisir une montée :", options=noms_cols, index=0)
-            asc_sel   = ascensions[noms_cols.index(col_choix)]
-            dk_sel    = asc_sel["_sommet_km"] - asc_sel["_debut_km"]
-            seg_defaut = 0.5 if dk_sel < 5 else 1.0 if dk_sel < 15 else 2.0
-            col_ctrl1, col_ctrl2 = st.columns([3, 1])
-            with col_ctrl1:
-                seg_km = st.slider("Longueur des segments (km)", 0.25,
-                                   min(5.0, dk_sel / 2), float(seg_defaut), 0.25)
-            with col_ctrl2:
-                nb_segs = max(2, int(dk_sel / seg_km))
-                st.metric("Segments", nb_segs)
-            if not df_profil.empty:
-                fig_col = creer_figure_col(df_profil, asc_sel, nb_segments=nb_segs)
-                if fig_col:
-                    st.plotly_chart(fig_col, width='stretch')
-                st.markdown("**Intensité de pente :** 🟢 <3% · 🟡 3–6% · 🟠 6–8% · 🔴 8–12% · 🟤 >12%")
+            cols_aff = ["Catégorie","Nom","Départ (km)","Sommet (km)","Longueur", "Dénivelé","Pente moy."]
+            st.dataframe(pd.DataFrame(ascensions)[cols_aff], width='stretch', hide_index=True)
+            col_choix = st.selectbox("Choisir une montée :", [f"{a['Catégorie']} - {a.get('Nom','')}" for a in ascensions])
+            idx = [f"{a['Catégorie']} - {a.get('Nom','')}" for a in ascensions].index(col_choix)
+            st.plotly_chart(creer_figure_col(df_profil, ascensions[idx]), width='stretch')
         else:
-            st.success("🚴‍♂️ Aucune difficulté catégorisée — parcours roulant !")
+            st.success("🚴‍♂️ Aucune difficulté catégorisée.")
 
     with tab_detail:
-        st.caption(f"Un point toutes les **{intervalle} min**. Wind Chill si temp ≤ 10°C et vent > 4.8 km/h.")
-        lignes = []
-        for cp in resultats:
-            t = cp.get("temp_val")
-            v = cp.get("vent_val")
-            rg = cp.get("rafales_val")
-            lignes.append({
-                "Heure": cp["Heure"], "Km": cp["Km"], "Alt (m)": cp["Alt (m)"],
-                "Ciel": cp.get("Ciel","—"),
-                "Temp (°C)": f"{t}°C" if t is not None else "—",
-                "Ressenti": label_wind_chill(cp.get("ressenti")),
-                "Pluie": cp.get("Pluie","—"),
-                "Vent (km/h)": f"{v} km/h" if v is not None else "—",
-                "Rafales": f"{rg} km/h" if rg is not None else "—",
-                "Direction": cp.get("Dir","—"),
-                "Effet vent": cp.get("effet","—"),
-            })
-        st.dataframe(pd.DataFrame(lignes), width='stretch', hide_index=True,
-            column_config={
-                "Heure":       st.column_config.TextColumn("🕐 Heure"),
-                "Km":          st.column_config.NumberColumn("📏 Km"),
-                "Alt (m)":     st.column_config.NumberColumn("⛰️ Alt"),
-                "Ciel":        st.column_config.TextColumn("🌤️ Ciel"),
-                "Temp (°C)":   st.column_config.TextColumn("🌡️ Temp"),
-                "Ressenti":    st.column_config.TextColumn("🥶 Ressenti"),
-                "Pluie":       st.column_config.TextColumn("🌧️ Pluie"),
-                "Vent (km/h)": st.column_config.TextColumn("💨 Vent"),
-                "Rafales":     st.column_config.TextColumn("🌬️ Rafales"),
-                "Direction":   st.column_config.TextColumn("🧭 Direction"),
-                "Effet vent":  st.column_config.TextColumn("🚴 Effet"),
-            })
+        lignes = [{"Heure": cp["Heure"], "Km": cp["Km"], "Temp (°C)": f"{cp.get('temp_val','-')}°C"} for cp in resultats]
+        st.dataframe(pd.DataFrame(lignes), width='stretch', hide_index=True)
 
-    # ── ANALYSE IA ───────────────────────────────────────────────────────────
+    # ── ANALYSE IA (AVEC FIX CALENDRIER) ──────────────────────────────────────
     with tab_analyse:
         st.subheader("🎙️ Le Briefing du Pote de Sortie")
-        st.markdown("Obtenez une analyse personnalisée générée par l'Intelligence Artificielle de Google (Gemini) : infos météo, gestion de l'effort, équipement conseillé et calcul de votre ravitaillement.")
-        
         if not gemini_key:
-            st.info("👈 **Pour activer l'analyse**, entrez votre clé API Gemini dans le menu '🔧 Options avancées' situé dans la barre latérale gauche.")
+            st.info("👈 **Entrez votre clé API Gemini dans le menu latéral.**")
         else:
             if "briefing_ia" not in st.session_state:
                 st.session_state.briefing_ia = None
 
             if st.button("💬 Générer ou Actualiser le briefing", use_container_width=True):
-                with st.spinner("Analyse du parcours et préparation des conseils en cours..."):
+                with st.spinner("Analyse du parcours..."):
                     try:
-                        # Calcul du "Contexte de date" pour l'IA
-                        aujourd_hui = date.today()
-                        delta_jours = (date_dep - aujourd_hui).days
+                        # ── FIX CALENDRIER ──
+                        jours_fr = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+                        mois_fr = ["", "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
+                        delta_jours = (date_dep - date.today()).days
                         
                         if delta_jours == 0:
                             contexte_date = "Aujourd'hui"
                         elif delta_jours == 1:
                             contexte_date = "Demain"
                         else:
-                            contexte_date = f"le {date_dep.strftime('%d/%m/%Y')}"
+                            contexte_date = f"le {jours_fr[date_dep.weekday()]} {date_dep.day} {mois_fr[date_dep.month]} {date_dep.year}"
 
                         briefing = generer_briefing(
-                            api_key=gemini_key, 
-                            dist_tot=dist_tot, 
-                            d_plus=d_plus, 
-                            temps_s=temps_s,
-                            calories=calories,
-                            score=score, 
-                            ascensions=ascensions, 
-                            analyse_meteo=analyse_meteo,
-                            resultats=resultats,
-                            heure_depart=heure_dep.strftime('%H:%M'),
-                            heure_arrivee=heure_arr.strftime('%H:%M'),
-                            vitesse_moyenne=vitesse,
-                            infos_soleil=infos_soleil,
-                            contexte_date=contexte_date
+                            api_key=gemini_key, dist_tot=dist_tot, d_plus=d_plus, temps_s=temps_s,
+                            calories=calories, score=score, ascensions=ascensions, analyse_meteo=analyse_meteo,
+                            resultats=resultats, heure_depart=heure_dep.strftime('%H:%M'),
+                            heure_arrivee=heure_arr.strftime('%H:%M'), vitesse_moyenne=vitesse,
+                            infos_soleil=infos_soleil, contexte_date=contexte_date
                         )
-                        if briefing:
-                            st.session_state.briefing_ia = briefing
+                        st.session_state.briefing_ia = briefing
                     except Exception as e:
-                        st.error(f"❌ Erreur lors de la communication avec l'API Gemini. (Détail: {e})")
+                        st.error(f"❌ Erreur API : {e}")
 
             if st.session_state.briefing_ia:
-                st.success("✅ Briefing prêt !")
-                st.markdown(f"""
-                <div style="background-color:#f8fafc; padding:25px; border-radius:12px; border-left:6px solid #22c55e; color:#1e293b; font-size:1.05rem; line-height:1.6; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                    {st.session_state.briefing_ia}
-                </div>
-                """, unsafe_allow_html=True)
-
+                st.success("✅ Briefing prêt ! Vous pouvez maintenant télécharger le Roadbook PDF depuis l'onglet 'Carte'.")
+                st.markdown(f"<div style='background-color:#f8fafc; padding:25px; border-radius:12px; border-left:6px solid #22c55e;'>{st.session_state.briefing_ia}</div>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
